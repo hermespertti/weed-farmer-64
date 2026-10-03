@@ -33,19 +33,6 @@ int main(void)
     T3DModel *mPot   = t3d_model_load("rom:/pot.t3dm");
     T3DModel *mLamp  = t3d_model_load("rom:/lamp.t3dm");
 
-    {
-        // force lit+flat combiner on generated models (dummy materials)
-        T3DModel *mm[2] = { mPlant, mPot };
-        for (int k = 0; k < 2; k++) {
-            T3DMaterial *mat = t3d_model_get_material(mm[k], k ? "potMat" : "plantMat");
-            if (mat) {
-                mat->renderFlags |= T3D_FLAG_SHADED;
-                mat->colorCombiner = RDPQ_COMBINER_SHADE;
-                debugf("[ab] forced SHADED on %s\n", mat->name);
-            }
-        }
-    }
-
     Pot pots[6];
     for (int i = 0; i < 6; i++) {
         pots[i] = (Pot){
@@ -62,6 +49,16 @@ int main(void)
         { {{ 24, 38, 0}}, 150.0f, {0xFF, 0x40, 0xC0, 0xFF} },
     };
 
+    // glb-generated materials came through --ignore-materials (dummy CC);
+    // force the vertex-color combiner so vertex col + lighting shows.
+    {
+        T3DMaterial *mp = t3d_model_get_material(mPlant, "plantMat");
+        T3DMaterial *mo = t3d_model_get_material(mPot, "potMat");
+        if (mp) mp->colorCombiner = RDPQ_COMBINER_SHADE;
+        if (mo) mo->colorCombiner = RDPQ_COMBINER_SHADE;
+        debugf("[wf64] mats patched: plant=%d pot=%d\n", mp != 0, mo != 0);
+    }
+
     debugf("[wf64] plant aabb min %d %d %d max %d %d %d\n",
            mPlant->aabbMin[0], mPlant->aabbMin[1], mPlant->aabbMin[2],
            mPlant->aabbMax[0], mPlant->aabbMax[1], mPlant->aabbMax[2]);
@@ -72,8 +69,8 @@ int main(void)
            mLamp->aabbMin[0], mLamp->aabbMin[1], mLamp->aabbMin[2],
            mLamp->aabbMax[0], mLamp->aabbMax[1], mLamp->aabbMax[2]);
 
-    fm_vec3_t camPos = {{0, 30, 96}};
-    fm_vec3_t camTarget = {{0, 10, -6}};
+    fm_vec3_t camPos = {{0, 16, 58}};
+    fm_vec3_t camTarget = {{0, 5, -8}};
     float t = 0.0f;
     int frameIdx = 0;
 
@@ -107,7 +104,7 @@ int main(void)
         int sel = (int)(t / 4.0f) % 6;
         if (jin.btn.a) pots[sel].water = 1.0f;
 
-        t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(65.0f), 5.0f, 300.0f);
+        t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(70.0f), 5.0f, 400.0f);
         t3d_viewport_look_at(&viewport, &camPos, &camTarget, &(fm_vec3_t){{0, 1, 0}});
 
         int mi = 0;
@@ -133,7 +130,8 @@ int main(void)
         t3d_screen_clear_color(RGBA32(18, 8, 30, 0xFF));
         t3d_screen_clear_depth();
 
-        t3d_light_set_ambient((uint8_t[4]){22, 10, 34, 0xFF});
+        t3d_light_set_ambient((uint8_t[4]){48, 24, 64, 0xFF});
+        t3d_light_set_exposure(1.6f);
         for (int i = 0; i < 2; i++)
             t3d_light_set_point(i, &lights[i].color.r, &lights[i].pos, lights[i].strength, false);
         t3d_light_set_count(2);

@@ -25,7 +25,7 @@ filesystem/%.sprite: assets/%.png
 filesystem/%.t3dm: assets/%.glb
 	@mkdir -p $(dir $@)
 	@echo "    [T3D-MODEL] $@"
-	$(T3D_GLTF_TO_3D) "$<" $@
+	$(T3D_GLTF_TO_3D) "$<" $@ --ignore-materials
 	$(N64_BINDIR)/mkasset -c 2 -o filesystem $@
 
 $(BUILD_DIR)/$(PROJECT_NAME).dfs: $(assets_conv)
