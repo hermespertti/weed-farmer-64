@@ -13,10 +13,17 @@ src = src/main.c
 
 assets_gltf = $(wildcard assets/*.glb)
 assets_png = $(wildcard assets/*.png)
+assets_sfx = $(wildcard assets/sfx/*.wav)
 assets_conv = $(addprefix filesystem/,$(notdir $(assets_gltf:%.glb=%.t3dm))) \
-		  $(addprefix filesystem/,$(notdir $(assets_png:%.png=%.sprite)))
+		  $(addprefix filesystem/,$(notdir $(assets_png:%.png=%.sprite))) \
+		  $(addprefix filesystem/sfx/,$(notdir $(assets_sfx:%.wav=%.wav64)))
 
 all: $(PROJECT_NAME).z64
+
+filesystem/sfx/%.wav64: assets/sfx/%.wav
+	@mkdir -p $(dir $@)
+	@echo "    [SFX] $@"
+	$(N64_AUDIOCONV) --wav-resample 22050 --wav-mono -o $(dir $@) "$<"
 
 filesystem/%.sprite: assets/%.png
 	@mkdir -p $(dir $@)

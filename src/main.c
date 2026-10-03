@@ -2,9 +2,38 @@
 #include <libdragon.h>
 #include <t3d/t3d.h>
 #include <t3d/t3dmodel.h>
+#include <t3d/tpx.h>
 #include <math.h>
 
 #define FB_COUNT 3
+
+#define MAXPART 64
+typedef struct {
+    fm_vec3_t pos, vel;
+    int life;
+    uint8_t col[4];
+    int size;          // <10 = mote (floats, no gravity)
+} Particle;
+static Particle parts[MAXPART];
+static int partHead = 0;
+static TPXParticleS8 *tpxBuf;
+static T3DMat4FP *tpxMat;
+
+static void fx_burst(fm_vec3_t at, int count, int up, uint8_t col[4])
+{
+    for (int i = 0; i < count; i++) {
+        Particle *p = &parts[partHead];
+        partHead = (partHead + 1) % MAXPART;
+        float a = (float)i / count * 6.28318f;
+        p->pos = (fm_vec3_t){{ at.v[0] + cosf(a) * 2.0f,
+                              at.v[1] + 10.0f + (up ? 6.0f : 0.0f),
+                              at.v[2] + sinf(a) * 2.0f }};
+        p->vel = (fm_vec3_t){{ cosf(a) * 0.10f, up ? 0.35f : 0.05f, sinf(a) * 0.10f }};
+        p->life = 30 + (i % 8) * 2;
+        p->col[0] = col[0]; p->col[1] = col[1]; p->col[2] = col[2]; p->col[3] = 0xFF;
+        p->size = up ? 28 : 18;
+    }
+}
 
 typedef struct {
     fm_vec3_t pos;
@@ -21,11 +50,27 @@ int main(void)
     asset_init_compression(2);
     dfs_init(DFS_DEFAULT_LOCATION);
 
+#ifdef AUDIO_ON   // -DAUDIO_ON: SFX enabled; ares-headless COP2 bug kills audio+tpx overlay combo
+    audio_init(22050, 0.03f);
+    mixer_init(8);
+    mixer_set_vol(0.8f);
+    wav64_t sndWater, sndHarvest;
+    wav64_open(&sndWater,   "rom:/sfx/water.wav64");
+    wav64_open(&sndHarvest, "rom:/sfx/harvest.wav64");
+#endif
+
     display_init(RESOLUTION_320x240, DEPTH_16_BPP, FB_COUNT, GAMMA_NONE,
-                 FILTERS_RESAMPLE_ANTIALIAS_DEDITHER);
+                 FILTERS_RESAMPLE);
     joypad_init();
     rdpq_init();
+    tpxBuf = malloc_uncached(sizeof(TPXParticleS8) * (MAXPART / 2));
+    tpxMat = malloc_uncached(sizeof(T3DMat4FP));
+    t3d_mat4fp_from_srt_euler(tpxMat,
+        (float[3]){1,1,1}, (float[3]){0,0,0}, (float[3]){0,0,0});
     t3d_init((T3DInitParams){});
+#ifdef PARTICLES   // -DPARTICLES: tinyPX fx; ares-headless COP2 crash under our overlay combo (see README)
+    tpx_init((TPXInitParams){});
+#endif
     rdpq_text_register_font(FONT_BUILTIN_DEBUG_MONO,
                            rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
     T3DViewport viewport = t3d_viewport_create_buffered(FB_COUNT);
@@ -145,18 +190,52 @@ int main(void)
                 int val = 10 + (int)(pots[sel].quality * 40.0f);
                 money += val;
                 harvested++;
+                fx_burst(pots[sel].pos, 24, 1, (uint8_t[4]){220, 90, 255, 0xFF});
+#ifdef AUDIO_ON
+                if (!mixer_ch_playing(7)) mixer_ch_play(7, &sndHarvest.wave);
+#endif
                 debugf("[wf64] harvested pot %d q=%.2f $%d (tot $%d)\n",
                        sel + 1, pots[sel].quality, val, money);
                 pots[sel] = (Pot){ .pos = pots[sel].pos, .growth = 0.02f,
                                    .water = 0.8f, .quality = 0.8f, .rot = 0.0f };
             } else {
                 pots[sel].water = 1.0f;
+                fx_burst(pots[sel].pos, 16, 0, (uint8_t[4]){80, 140, 255, 0xFF});
+#ifdef AUDIO_ON
+                if (!mixer_ch_playing(6)) mixer_ch_play(6, &sndWater.wave);
+#endif
             }
         }
 
         // day cycle: 60 s per day (40 s light, 20 s night)
         dayT += 0.016f;
         if (dayT > 60.0f) { dayT = 0.0f; day++; }
+
+        // ambient grow-room motes (also keeps tpx drawing every frame = stable)
+        {
+            static int mote = 0;
+            if (++mote % 10 == 0) {
+                Particle *p = &parts[partHead];
+                partHead = (partHead + 1) % MAXPART;
+                float a = t * 0.9f;
+                p->pos = (fm_vec3_t){{ sinf(a * 1.7f) * 55.0f,
+                                      6.0f + fmodf(t * 3.0f, 30.0f),
+                                      cosf(a * 1.3f) * 24.0f }};
+                p->vel = (fm_vec3_t){{ 0.01f, 0.03f, 0.0f }};
+                p->life = 90;
+                p->col[0] = 200; p->col[1] = 120; p->col[2] = 255; p->col[3] = 0xFF;
+                p->size = 8;
+            }
+        }
+        for (int i = 0; i < MAXPART; i++) {
+            if (parts[i].life <= 0) continue;
+            parts[i].life--;
+            parts[i].pos.v[0] += parts[i].vel.v[0];
+            parts[i].pos.v[1] += parts[i].vel.v[1];
+            parts[i].pos.v[2] += parts[i].vel.v[2];
+            if (parts[i].size >= 10) parts[i].vel.v[1] -= 0.012f;   // motes float
+            if (parts[i].pos.v[1] < 0.0f) parts[i].life = 0;
+        }
 
         t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(65.0f), 5.0f, 300.0f);
         t3d_viewport_look_at(&viewport, &camPos, &camTarget, &(fm_vec3_t){{0, 1, 0}});
@@ -264,6 +343,59 @@ int main(void)
             rspq_block_run(dplLamp);
         }
         t3d_matrix_pop(1);
+
+        // ---- particles (tinyPX) ----
+#ifdef PARTICLES
+        {
+            TPXParticleS8 *pb = tpxBuf;
+            int live = 0;
+            for (int i = 0; i < MAXPART; i++) {
+                if (parts[i].life <= 0) continue;
+                TPXParticleS8 *pr = &pb[live >> 1];
+                int8_t *base = (int8_t *)pr;
+                uint8_t *cb = (uint8_t *)pr;
+                if (!(live & 1)) {   // particle A: pos bytes 0..3, color 8..11
+                    base[0] = (int8_t)parts[i].pos.v[0];
+                    base[1] = (int8_t)parts[i].pos.v[1];
+                    base[2] = (int8_t)parts[i].pos.v[2];
+                    base[3] = (int8_t)parts[i].size;
+                    cb[8]  = parts[i].col[0];
+                    cb[9]  = parts[i].col[1];
+                    cb[10] = parts[i].col[2];
+                    cb[11] = 0xFF;
+                } else {             // particle B: pos bytes 4..7, color 12..15
+                    base[4] = (int8_t)parts[i].pos.v[0];
+                    base[5] = (int8_t)parts[i].pos.v[1];
+                    base[6] = (int8_t)parts[i].pos.v[2];
+                    base[7] = (int8_t)parts[i].size;
+                    cb[12] = parts[i].col[0];
+                    cb[13] = parts[i].col[1];
+                    cb[14] = parts[i].col[2];
+                    cb[15] = 0xFF;
+                }
+                live++;
+            }
+            if (live & 1) {   // even count required
+                TPXParticleS8 *pr = &pb[live >> 1];
+                pr->posB[0] = pr->posB[1] = pr->posB[2] = 0; pr->sizeB = 0;
+                pr->colorB[0] = pr->colorB[1] = pr->colorB[2] = pr->colorB[3] = 0;
+                live++;
+            }
+            if (live) {
+                rdpq_set_mode_standard();
+                rdpq_mode_zbuf(true, true);
+                rdpq_mode_zoverride(true, 0, 0);
+                rdpq_mode_combiner(RDPQ_COMBINER1((PRIM,0,ENV,0), (0,0,0,1)));
+                tpx_state_from_t3d();
+                // RSP reads this via DMA — must be uncached (cached static =
+                // random-frame COP2/timer crashes, example 18 uses malloc_uncached)
+                tpx_matrix_push(tpxMat);
+                tpx_state_set_base_size(64);
+                tpx_state_set_scale(1.0f, 1.0f);
+                tpx_particle_draw_s8(pb, live);
+            }
+        }
+#endif
 
         // ---- HUD (2D) ----
         rdpq_set_mode_standard();
