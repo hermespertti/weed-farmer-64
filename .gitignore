@@ -1,0 +1,9 @@
+build/
+*.z64
+*.dfs
+shots/
+boxart_*.png
+assets/*
+!assets/*.glb
+filesystem/
+src/main.c.bak
