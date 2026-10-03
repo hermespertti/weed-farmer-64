@@ -10,6 +10,7 @@ typedef struct {
     fm_vec3_t pos;
     float growth;      // 0..1
     float water;       // 0..1
+    float quality;     // 0..1 running avg of water while growing
     float rot;
 } Pot;
 
@@ -56,6 +57,7 @@ int main(void)
             .pos = {{ -36.0f + (i % 3) * 36.0f, 0.0f, -14.0f + (i / 3) * 26.0f }},
             .growth = 0.05f + (i % 3) * 0.45f,
             .water = 0.5f,
+            .quality = 0.5f,
             .rot = 0.0f,
         };
     }
@@ -76,6 +78,8 @@ int main(void)
            mLamp->aabbMin[0], mLamp->aabbMin[1], mLamp->aabbMin[2],
            mLamp->aabbMax[0], mLamp->aabbMax[1], mLamp->aabbMax[2]);
 
+    int money = 0;           // dollars from sold buds
+    int harvested = 0;       // total buds cut
     int sel = 2;             // player-selected pot
     uint32_t prevDir = 0;    // edge detection for d-pad/stick cycling
     int day = 1;
@@ -121,18 +125,36 @@ int main(void)
         if (dir && !(prevDir & dir)) sel = (sel + (dir == 1 ? 1 : 5)) % 6;
         prevDir = dir;
 
+        int night = dayT >= 40.0f;   // light phase done -> growth pauses
+
         // plants grow slowly (the hum of the grow-op)
         for (int i = 0; i < 6; i++) {
-            pots[i].growth += 0.00008f * (0.5f + pots[i].water);
-            if (pots[i].growth > 1.0f) pots[i].growth = 1.0f;
-            pots[i].water -= 0.00005f;
+            if (!night && pots[i].growth < 1.0f) {
+                pots[i].growth += 0.0003f * (0.3f + pots[i].water);
+                if (pots[i].growth > 1.0f) pots[i].growth = 1.0f;
+                // quality tracks how well-watered the grow was
+                pots[i].quality += (pots[i].water - pots[i].quality) * 0.02f;
+            }
+            pots[i].water -= night ? 0.00002f : 0.00008f;
             if (pots[i].water < 0.0f) pots[i].water = 0.0f;
             pots[i].rot = sinf(t * 0.8f + i) * 0.05f;  // fan breeze sway
         }
-        // A waters the selected pot
-        if (jin.btn.a) pots[sel].water = 1.0f;
+        // A: water if thirsty/growing, harvest if ripe
+        if (jin.btn.a) {
+            if (pots[sel].growth >= 1.0f) {
+                int val = 10 + (int)(pots[sel].quality * 40.0f);
+                money += val;
+                harvested++;
+                debugf("[wf64] harvested pot %d q=%.2f $%d (tot $%d)\n",
+                       sel + 1, pots[sel].quality, val, money);
+                pots[sel] = (Pot){ .pos = pots[sel].pos, .growth = 0.02f,
+                                   .water = 0.8f, .quality = 0.8f, .rot = 0.0f };
+            } else {
+                pots[sel].water = 1.0f;
+            }
+        }
 
-        // day cycle: 60 s per day
+        // day cycle: 60 s per day (40 s light, 20 s night)
         dayT += 0.016f;
         if (dayT > 60.0f) { dayT = 0.0f; day++; }
 
@@ -170,10 +192,17 @@ int main(void)
         t3d_screen_clear_color(RGBA32(18, 8, 30, 0xFF));
         t3d_screen_clear_depth();
 
-        t3d_light_set_ambient((uint8_t[4]){22, 10, 34, 0xFF});
-        for (int i = 0; i < 2; i++)
-            t3d_light_set_point(i, &lights[i].color.r, &lights[i].pos, lights[i].strength, false);
-        t3d_light_set_count(2);
+        if (night) {
+            t3d_light_set_ambient((uint8_t[4]){8, 8, 22, 0xFF});
+            t3d_light_set_point(0, (uint8_t[4]){80, 90, 200, 0xFF},
+                                &(fm_vec3_t){{0, 50, 40}}, 60.0f, false);
+            t3d_light_set_count(1);
+        } else {
+            t3d_light_set_ambient((uint8_t[4]){22, 10, 34, 0xFF});
+            for (int i = 0; i < 2; i++)
+                t3d_light_set_point(i, &lights[i].color.r, &lights[i].pos, lights[i].strength, false);
+            t3d_light_set_count(2);
+        }
 
         // pots + plants (6 each, mats packed 0..11).
         // push one stack slot, then repeated set(true) = the example-03 idiom;
@@ -244,20 +273,24 @@ int main(void)
         rdpq_fill_rectangle(0, 204, 320, 240);
         // water bar
         rdpq_set_prim_color(RGBA32(40, 120, 200, 255));
-        rdpq_fill_rectangle(60, 226, 60 + (int)(100.0f * pots[sel].water), 234);
+        rdpq_fill_rectangle(60, 230, 60 + (int)(100.0f * pots[sel].water), 238);
         // growth bar
         rdpq_set_prim_color(RGBA32(80, 200, 90, 255));
-        rdpq_fill_rectangle(200, 226, 200 + (int)(100.0f * pots[sel].growth), 234);
+        rdpq_fill_rectangle(200, 230, 200 + (int)(100.0f * pots[sel].growth), 238);
         // ready marker
         if (pots[sel].growth >= 1.0f) {
             rdpq_set_prim_color(RGBA32(255, 80, 220, 255));
-            rdpq_fill_rectangle(304, 226, 312, 234);
+            rdpq_fill_rectangle(304, 230, 312, 238);
         }
         rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 208,
-            "POT %d/6   DAY %d", sel + 1, day);
-        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 60, 212, "WATER");
-        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 200, 212, "GROW");
-        if (pots[sel].water < 0.25f)
+            "POT %d/6 %s  $$%d  CUT %d",
+            sel + 1, night ? "NIGHT" : "DAY " , money, harvested);
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 196, "DAY %d", day);
+        if (pots[sel].growth >= 1.0f)
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 190, "RIPE! A=HARVEST");
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 60, 219, "WATER");
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 200, 219, "GROW");
+        if (pots[sel].water < 0.25f && pots[sel].growth < 1.0f)
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 190, "THIRSTY! press A");
 
         rdpq_detach_show();
@@ -265,8 +298,9 @@ int main(void)
         if ((int)(t * 60) % 180 == 0) {
             static char ln[200];
             snprintf(ln, sizeof ln,
-                "[wf64] t=%d cam=%.0f pots: g0=%.2f w0=%.2f sel=%d wsel=%.2f",
-                (int)(t * 60), camPos.v[0], pots[0].growth, pots[0].water, sel, pots[sel].water);
+                "[wf64] t=%d d=%d night=%d pots: g0=%.2f w0=%.2f sel=%d gsel=%.2f $%d cut%d",
+                (int)(t * 60), day, night, pots[0].growth, pots[0].water, sel,
+                pots[sel].growth, money, harvested);
             debugf("%s\n", ln);
         }
     }
