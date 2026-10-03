@@ -32,14 +32,16 @@ int main(void)
     T3DMat4FP *matFP = malloc_uncached(sizeof(T3DMat4FP) * 17 * FB_COUNT);
 
     T3DModel *mPlant = t3d_model_load("rom:/plant.t3dm");
+    T3DModel *mSprout = t3d_model_load("rom:/sprout.t3dm");
     T3DModel *mPot   = t3d_model_load("rom:/pot.t3dm");
     T3DModel *mLamp  = t3d_model_load("rom:/lamp.t3dm");
 
     {
         // force lit+flat combiner on generated models (dummy materials)
-        T3DModel *mm[2] = { mPlant, mPot };
-        for (int k = 0; k < 2; k++) {
-            T3DMaterial *mat = t3d_model_get_material(mm[k], k ? "potMat" : "plantMat");
+        T3DModel *mm[3] = { mPlant, mPot, mSprout };
+        const char *mn[3] = { "plantMat", "potMat", "sproutMat" };
+        for (int k = 0; k < 3; k++) {
+            T3DMaterial *mat = t3d_model_get_material(mm[k], mn[k]);
             if (mat) {
                 mat->renderFlags |= T3D_FLAG_SHADED;
                 mat->colorCombiner = RDPQ_COMBINER_SHADE;
@@ -52,7 +54,7 @@ int main(void)
     for (int i = 0; i < 6; i++) {
         pots[i] = (Pot){
             .pos = {{ -36.0f + (i % 3) * 36.0f, 0.0f, -14.0f + (i / 3) * 26.0f }},
-            .growth = 0.1f + 0.1f * i,
+            .growth = 0.05f + (i % 3) * 0.45f,
             .water = 0.5f,
             .rot = 0.0f,
         };
@@ -79,8 +81,8 @@ int main(void)
     int day = 1;
     float dayT = 0.0f;
 
-    fm_vec3_t camPos = {{0, 30, 96}};
-    fm_vec3_t camTarget = {{0, 10, -6}};
+    fm_vec3_t camPos = {{0, 22, 104}};
+    fm_vec3_t camTarget = {{0, 16, -8}};
     float t = 0.0f;
     int frameIdx = 0;
 
@@ -139,11 +141,19 @@ int main(void)
 
         int mi = 0;
         for (int i = 0; i < 6; i++) {
-            float s = 0.035f + pots[i].growth * 0.045f;
-            // plant
+            float s, rot = pots[i].rot;
+            // stage pop: sprout uses its own model + bigger relative scale;
+            // ripe plants wobble harder (harvest-ready tell)
+            if (pots[i].growth < 0.35f) {
+                s = 0.30f + pots[i].growth * 0.55f;             // sprout ~1/4 pot height
+            } else {
+                s = 0.05f + pots[i].growth * 0.04f;              // plant 192u tall
+            }
+            if (pots[i].growth >= 1.0f) rot *= 4.0f;
+            // plant / sprout
             t3d_mat4fp_from_srt_euler(&matFP[mi + 17 * frameIdx],
                 (float[3]){s, s, s},
-                (float[3]){pots[i].rot, pots[i].rot * 1.3f + t * 0.1f, pots[i].rot},
+                (float[3]){rot, rot * 1.3f + t * 0.1f, rot},
                 (float[3]){pots[i].pos.v[0], pots[i].pos.v[1] + 6.5f, pots[i].pos.v[2]});
             mi++;
             // pot
@@ -176,7 +186,10 @@ int main(void)
             rspq_block_run(dplPot);
             mi++;
             t3d_matrix_set(&matFP[mi + 17 * frameIdx], true);
-            t3d_model_draw(mPlant);
+            if (pots[i].growth < 0.35f)
+                t3d_model_draw(mSprout);   // stage 0: seedling
+            else
+                t3d_model_draw(mPlant);    // veg + flower
             mi++;
         }
         // floor: crate box flattened to a slab
