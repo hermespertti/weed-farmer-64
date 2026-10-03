@@ -5,6 +5,7 @@ include $(N64_INST)/include/n64.mk
 include $(T3D_INST)/t3d.mk
 
 N64_CFLAGS += -std=gnu2x
+N64_CFLAGS += $(EXTRA_CFLAGS)
 
 PROJECT_NAME=weedfarmer64
 

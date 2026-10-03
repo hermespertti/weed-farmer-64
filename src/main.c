@@ -25,9 +25,11 @@ int main(void)
     joypad_init();
     rdpq_init();
     t3d_init((T3DInitParams){});
+    rdpq_text_register_font(FONT_BUILTIN_DEBUG_MONO,
+                           rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
     T3DViewport viewport = t3d_viewport_create_buffered(FB_COUNT);
 
-    T3DMat4FP *matFP = malloc_uncached(sizeof(T3DMat4FP) * 16 * FB_COUNT);
+    T3DMat4FP *matFP = malloc_uncached(sizeof(T3DMat4FP) * 17 * FB_COUNT);
 
     T3DModel *mPlant = t3d_model_load("rom:/plant.t3dm");
     T3DModel *mPot   = t3d_model_load("rom:/pot.t3dm");
@@ -72,6 +74,11 @@ int main(void)
            mLamp->aabbMin[0], mLamp->aabbMin[1], mLamp->aabbMin[2],
            mLamp->aabbMax[0], mLamp->aabbMax[1], mLamp->aabbMax[2]);
 
+    int sel = 2;             // player-selected pot
+    uint32_t prevDir = 0;    // edge detection for d-pad/stick cycling
+    int day = 1;
+    float dayT = 0.0f;
+
     fm_vec3_t camPos = {{0, 30, 96}};
     fm_vec3_t camTarget = {{0, 10, -6}};
     float t = 0.0f;
@@ -87,13 +94,30 @@ int main(void)
     for (;;) {
         joypad_poll();
         joypad_inputs_t jin = joypad_get_inputs(JOYPAD_PORT_1);
+#ifdef AUTOTEST
+        {   // ares JS input injection is unreliable on libdragon joypad_poll;
+            // synthesize: every 150 frames press d_right, every 200 press A.
+            int f = (int)(t * 60.0f);
+            jin.btn.d_right = (f % 150) < 4;
+            jin.btn.d_left  = false;
+            jin.btn.a       = (f % 200) < 4;
+            jin.stick_x = 0; jin.stick_y = 0;
+        }
+#endif
         frameIdx = (frameIdx + 1) % FB_COUNT;
         t += 0.016f;
 
-        // walk the room a bit with the stick (for feel)
-        camPos.v[0] += jin.stick_x * -0.2f;
-        if (camPos.v[0] > 60) camPos.v[0] = 60;
-        if (camPos.v[0] < -60) camPos.v[0] = -60;
+        // camera drifts a hair with the stick for feel
+        camPos.v[0] += jin.stick_x * -0.04f;
+        if (camPos.v[0] > 30) camPos.v[0] = 30;
+        if (camPos.v[0] < -30) camPos.v[0] = -30;
+
+        // d-pad left/right (or stick edges) cycle the selected pot
+        uint32_t dir = 0;
+        if (jin.btn.d_right || jin.stick_x >  40) dir = 1;
+        if (jin.btn.d_left  || jin.stick_x < -40) dir = 2;
+        if (dir && !(prevDir & dir)) sel = (sel + (dir == 1 ? 1 : 5)) % 6;
+        prevDir = dir;
 
         // plants grow slowly (the hum of the grow-op)
         for (int i = 0; i < 6; i++) {
@@ -103,9 +127,12 @@ int main(void)
             if (pots[i].water < 0.0f) pots[i].water = 0.0f;
             pots[i].rot = sinf(t * 0.8f + i) * 0.05f;  // fan breeze sway
         }
-        // A waters the selected pot — placeholder selection = nearest pot
-        int sel = (int)(t / 4.0f) % 6;
+        // A waters the selected pot
         if (jin.btn.a) pots[sel].water = 1.0f;
+
+        // day cycle: 60 s per day
+        dayT += 0.016f;
+        if (dayT > 60.0f) { dayT = 0.0f; day++; }
 
         t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(65.0f), 5.0f, 300.0f);
         t3d_viewport_look_at(&viewport, &camPos, &camTarget, &(fm_vec3_t){{0, 1, 0}});
@@ -114,13 +141,13 @@ int main(void)
         for (int i = 0; i < 6; i++) {
             float s = 0.035f + pots[i].growth * 0.045f;
             // plant
-            t3d_mat4fp_from_srt_euler(&matFP[mi + 16 * frameIdx],
+            t3d_mat4fp_from_srt_euler(&matFP[mi + 17 * frameIdx],
                 (float[3]){s, s, s},
                 (float[3]){pots[i].rot, pots[i].rot * 1.3f + t * 0.1f, pots[i].rot},
                 (float[3]){pots[i].pos.v[0], pots[i].pos.v[1] + 6.5f, pots[i].pos.v[2]});
             mi++;
             // pot
-            t3d_mat4fp_from_srt_euler(&matFP[mi + 16 * frameIdx],
+            t3d_mat4fp_from_srt_euler(&matFP[mi + 17 * frameIdx],
                 (float[3]){0.16f, 0.16f, 0.16f},
                 (float[3]){0, 0, 0},
                 (float[3]){pots[i].pos.v[0], pots[i].pos.v[1], pots[i].pos.v[2]});
@@ -145,16 +172,16 @@ int main(void)
         t3d_matrix_push_pos(1);
         mi = 0;
         for (int i = 0; i < 6; i++) {
-            t3d_matrix_set(&matFP[mi + 16 * frameIdx], true);
+            t3d_matrix_set(&matFP[mi + 17 * frameIdx], true);
             rspq_block_run(dplPot);
             mi++;
-            t3d_matrix_set(&matFP[mi + 16 * frameIdx], true);
+            t3d_matrix_set(&matFP[mi + 17 * frameIdx], true);
             t3d_model_draw(mPlant);
             mi++;
         }
         // floor: crate box flattened to a slab
         {
-            T3DMat4FP *mfp = &matFP[14 + 16 * frameIdx];
+            T3DMat4FP *mfp = &matFP[14 + 17 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){1.6f, 0.015f, 0.9f},
                 (float[3]){0, 0, 0},
@@ -164,7 +191,7 @@ int main(void)
         }
         // back wall
         {
-            T3DMat4FP *mfp = &matFP[15 + 16 * frameIdx];
+            T3DMat4FP *mfp = &matFP[15 + 17 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){1.6f, 0.9f, 0.015f},
                 (float[3]){0, 0, 0},
@@ -174,7 +201,7 @@ int main(void)
         }
         // lamp bars over the rows
         for (int i = 0; i < 2; i++) {
-            T3DMat4FP *mfp = &matFP[12 + i + 16 * frameIdx];
+            T3DMat4FP *mfp = &matFP[12 + i + 17 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){0.5f, 0.12f, 0.12f},
                 (float[3]){0, 0, 0},
@@ -182,15 +209,51 @@ int main(void)
             t3d_matrix_set(mfp, true);
             rspq_block_run(dplLamp);
         }
+        // selection cursor: bobbing lamp-bar chip over the selected pot
+        {
+            float bob = sinf(t * 4.0f) * 2.0f;
+            T3DMat4FP *mfp = &matFP[16 + 17 * frameIdx];
+            t3d_mat4fp_from_srt_euler(mfp,
+                (float[3]){0.22f, 0.22f, 0.22f},
+                (float[3]){sinf(t * 3.0f) * 0.4f, t * 2.0f, 0},
+                (float[3]){pots[sel].pos.v[0], pots[sel].pos.v[1] + 27.0f + bob,
+                           pots[sel].pos.v[2] + 6.0f});
+            t3d_matrix_set(mfp, true);
+            rspq_block_run(dplLamp);
+        }
         t3d_matrix_pop(1);
+
+        // ---- HUD (2D) ----
+        rdpq_set_mode_standard();
+        // bottom bar backdrop
+        rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+        rdpq_set_prim_color(RGBA32(12, 6, 22, 220));
+        rdpq_fill_rectangle(0, 204, 320, 240);
+        // water bar
+        rdpq_set_prim_color(RGBA32(40, 120, 200, 255));
+        rdpq_fill_rectangle(60, 226, 60 + (int)(100.0f * pots[sel].water), 234);
+        // growth bar
+        rdpq_set_prim_color(RGBA32(80, 200, 90, 255));
+        rdpq_fill_rectangle(200, 226, 200 + (int)(100.0f * pots[sel].growth), 234);
+        // ready marker
+        if (pots[sel].growth >= 1.0f) {
+            rdpq_set_prim_color(RGBA32(255, 80, 220, 255));
+            rdpq_fill_rectangle(304, 226, 312, 234);
+        }
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 208,
+            "POT %d/6   DAY %d", sel + 1, day);
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 60, 212, "WATER");
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 200, 212, "GROW");
+        if (pots[sel].water < 0.25f)
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 190, "THIRSTY! press A");
 
         rdpq_detach_show();
 
         if ((int)(t * 60) % 180 == 0) {
             static char ln[200];
             snprintf(ln, sizeof ln,
-                "[wf64] t=%d cam=%.0f pots: g0=%.2f w0=%.2f sel=%d",
-                (int)(t * 60), camPos.v[0], pots[0].growth, pots[0].water, sel);
+                "[wf64] t=%d cam=%.0f pots: g0=%.2f w0=%.2f sel=%d wsel=%.2f",
+                (int)(t * 60), camPos.v[0], pots[0].growth, pots[0].water, sel, pots[sel].water);
             debugf("%s\n", ln);
         }
     }
