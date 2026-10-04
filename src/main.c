@@ -231,6 +231,8 @@ int main(void)
             jin.btn.start = ((f >= 200) && (f % 400) == 0);  // open/close shop visits
             jin.btn.b     = (f == 900) || (f == 1700);
             jin.stick_x = 0; jin.stick_y = 0;
+            static bool told = false;
+            if (!told) { told = true; debugf("[at] synth active\n"); }
         }
 #endif
         if (screen == 0 && (jin.btn.start || jin.btn.a)) screen = 1;
