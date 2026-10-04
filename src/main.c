@@ -54,9 +54,11 @@ int main(void)
     audio_init(22050, 0.03f);
     mixer_init(8);
     mixer_set_vol(0.8f);
-    wav64_t sndWater, sndHarvest;
+    wav64_t sndWater, sndHarvest, sndThirst;
     wav64_open(&sndWater,   "rom:/sfx/water.wav64");
     wav64_open(&sndHarvest, "rom:/sfx/harvest.wav64");
+    wav64_open(&sndThirst,  "rom:/sfx/thirsty.wav64");
+    int sfxCool = 0;
 #endif
 
     display_init(RESOLUTION_320x240, DEPTH_16_BPP, FB_COUNT, GAMMA_NONE,
@@ -129,6 +131,9 @@ int main(void)
     uint32_t prevDir = 0;    // edge detection for d-pad/stick cycling
     int day = 1;
     float dayT = 0.0f;
+#ifdef NIGHT_AT_BOOT
+    dayT = 45.0f;   // debug: start in night phase for screenshots
+#endif
 
     fm_vec3_t camPos = {{0, 22, 104}};
     fm_vec3_t camTarget = {{0, 16, -8}};
@@ -142,6 +147,9 @@ int main(void)
         t3d_model_draw(mLamp);
     rspq_block_t *dplLamp = rspq_block_end();
 
+#ifdef FX_AT_BOOT
+    fx_burst((fm_vec3_t){{-36.0f, 14.0f, 12.0f}}, 16, 0, (uint8_t[4]){80, 140, 255, 0xFF});
+#endif
     for (;;) {
         joypad_poll();
         joypad_inputs_t jin = joypad_get_inputs(JOYPAD_PORT_1);
@@ -237,6 +245,9 @@ int main(void)
             if (parts[i].pos.v[1] < 0.0f) parts[i].life = 0;
         }
 
+#ifdef AUDIO_ON
+        if (sfxCool > 0) sfxCool--;
+#endif
         t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(65.0f), 5.0f, 300.0f);
         t3d_viewport_look_at(&viewport, &camPos, &camTarget, &(fm_vec3_t){{0, 1, 0}});
 
@@ -422,8 +433,12 @@ int main(void)
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 190, "RIPE! A=HARVEST");
         rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 60, 219, "WATER");
         rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 200, 219, "GROW");
-        if (pots[sel].water < 0.25f && pots[sel].growth < 1.0f)
+        if (pots[sel].water < 0.25f && pots[sel].growth < 1.0f) {
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 190, "THIRSTY! press A");
+#ifdef AUDIO_ON
+            if (sfxCool <= 0) { mixer_ch_play(5, &sndThirst.wave); sfxCool = 240; }
+#endif
+        }
 
         rdpq_detach_show();
 
