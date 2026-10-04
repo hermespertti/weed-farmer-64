@@ -150,13 +150,15 @@ int main(void)
 #ifdef FX_AT_BOOT
     fx_burst((fm_vec3_t){{-36.0f, 14.0f, 12.0f}}, 16, 0, (uint8_t[4]){80, 140, 255, 0xFF});
 #endif
-    int screen = 0;   // 0 = title, 1 = play
+    int screen = 0;   // 0 = title, 1 = play, 2 = shop
     float camA = 0.6f;
+    int shopSel = 0;
+    int lvLight = 0, lvIrrig = 0, lvBags = 0;
+    float growMul = 1.0f;
     for (;;) {
         joypad_poll();
         joypad_inputs_t jin = joypad_get_inputs(JOYPAD_PORT_1);
         joypad_buttons_t jp = joypad_get_buttons_pressed(JOYPAD_PORT_1);
-        if (screen == 0 && (jin.btn.start || jin.btn.a)) screen = 1;
 #ifdef AUTOTEST
         {   // ares JS input injection is unreliable on libdragon joypad_poll;
             // synthesize: every 150 frames press d_right, every 200 press A.
@@ -164,10 +166,41 @@ int main(void)
             jin.btn.d_right = (f % 150) < 4;
             jin.btn.d_left  = false;
             jin.btn.a       = (f % 200) < 4;
-            jin.btn.start = (f == 200);
+            jin.btn.start = ((f >= 200) && (f % 400) == 0);  // open/close shop visits
+            jin.btn.b     = (f == 900) || (f == 1700);
             jin.stick_x = 0; jin.stick_y = 0;
         }
 #endif
+        if (screen == 0 && (jin.btn.start || jin.btn.a)) screen = 1;
+        static bool prevStart = false, prevB = false;
+        bool eStart = jin.btn.start && !prevStart;
+        bool eB     = jin.btn.b && !prevB;
+        prevStart = jin.btn.start; prevB = jin.btn.b;
+        if (screen == 1 && eStart) { screen = 2; debugf("[ui] OPEN shop\n"); }
+        else if (screen == 2 && (eB || eStart)) { screen = 1; debugf("[ui] CLOSE shop\n"); }
+        if (screen == 2) {
+            uint32_t dn = 0;
+            if (jin.btn.d_up   || jin.stick_y >  40) dn = 1;
+            if (jin.btn.d_down || jin.stick_y < -40) dn = 2;
+            static uint32_t pshop = 0;
+            if (dn && !(pshop & dn)) shopSel = (shopSel + (dn == 1 ? 2 : 1)) % 3;
+            pshop = dn;
+            static bool pA = false;
+            if (jin.btn.a && !pA) {
+                static const int cost[3] = {40, 70, 30};
+                int maxed = (shopSel == 0 && lvLight >= 3) ||
+                            (shopSel == 1 && lvIrrig >= 2) ||
+                            (shopSel == 2 && lvBags >= 3);
+                if (!maxed && money >= cost[shopSel]) {
+                    money -= cost[shopSel];
+                    if (shopSel == 0) { lvLight++; growMul = 1.0f + 0.5f * lvLight; }
+                    if (shopSel == 1) { lvIrrig++; }
+                    if (shopSel == 2) { lvBags++; }
+                    debugf("[shop] bought %d tot $%d (L%d I%d B%d)\n", shopSel, money, lvLight, lvIrrig, lvBags);
+                }
+            }
+            pA = jin.btn.a;
+        }
         frameIdx = (frameIdx + 1) % FB_COUNT;
         t += 0.016f;
 
@@ -190,19 +223,19 @@ int main(void)
         // plants grow slowly (the hum of the grow-op)
         for (int i = 0; i < 6; i++) {
             if (!night && pots[i].growth < 1.0f) {
-                pots[i].growth += 0.0003f * (0.3f + pots[i].water);
+                pots[i].growth += 0.0003f * (0.3f + pots[i].water) * growMul;
                 if (pots[i].growth > 1.0f) pots[i].growth = 1.0f;
                 // quality tracks how well-watered the grow was
                 pots[i].quality += (pots[i].water - pots[i].quality) * 0.02f;
             }
-            pots[i].water -= night ? 0.00002f : 0.00008f;
+            pots[i].water -= (night ? 0.00002f : 0.00008f) * (1.0f - 0.35f * lvIrrig);
             if (pots[i].water < 0.0f) pots[i].water = 0.0f;
             pots[i].rot = sinf(t * 0.8f + i) * 0.05f;  // fan breeze sway
         }
         // A: water if thirsty/growing, harvest if ripe
         if (jin.btn.a) {
             if (pots[sel].growth >= 1.0f) {
-                int val = 10 + (int)(pots[sel].quality * 40.0f);
+                int val = (int)((10 + pots[sel].quality * 40.0f) * (1.0f + 0.25f * lvBags));
                 money += val;
                 harvested++;
                 fx_burst(pots[sel].pos, 24, 1, (uint8_t[4]){220, 90, 255, 0xFF});
@@ -422,6 +455,37 @@ int main(void)
         }
 #endif
 
+        if (screen == 2) {
+            rdpq_set_mode_standard();
+            rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+            rdpq_set_prim_color(RGBA32(0, 0, 0, 200));
+            rdpq_fill_rectangle(34, 40, 286, 190);
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 96, 48, "ROADSIDE STAND");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 200, 58, "$$%d", money);
+            static const char *nm[3] = { "GROW LIGHT +50%", "DRIP IRRIGATION", "THICK BAGS +25%" };
+            static const int cost[3] = {40, 70, 30};
+            int lv[3] = {lvLight, lvIrrig, lvBags};
+            int mx[3] = {3, 2, 3};
+            for (int i = 0; i < 3; i++) {
+                int y = 76 + i * 22;
+                if (i == shopSel) {
+                    // text printf above switched rdpq to TEXT mode — must re-arm
+                    // standard+FLAT or this fill renders through the text combiner (invisible)
+                    rdpq_set_mode_standard();
+                    rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+                    rdpq_set_prim_color(RGBA32(120, 60, 180, 255));
+                    rdpq_fill_rectangle(44, y - 2, 276, y + 14);
+                    rdpq_set_mode_standard();
+                    rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+                    rdpq_set_prim_color(RGBA32(255, 255, 255, 255));
+                }
+                if (lv[i] >= mx[i])
+                    rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 50, y, "  %s   MAXED ", nm[i]);
+                else
+                    rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 50, y, "  %s $$%d Lv%d", nm[i], cost[i], lv[i]);
+            }
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 44, 150, "A buy   START/B back");
+        }
         // ---- title overlay / HUD ----
         if (screen == 0) {
             rdpq_set_mode_standard();
