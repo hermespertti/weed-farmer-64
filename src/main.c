@@ -150,9 +150,13 @@ int main(void)
 #ifdef FX_AT_BOOT
     fx_burst((fm_vec3_t){{-36.0f, 14.0f, 12.0f}}, 16, 0, (uint8_t[4]){80, 140, 255, 0xFF});
 #endif
+    int screen = 0;   // 0 = title, 1 = play
+    float camA = 0.6f;
     for (;;) {
         joypad_poll();
         joypad_inputs_t jin = joypad_get_inputs(JOYPAD_PORT_1);
+        joypad_buttons_t jp = joypad_get_buttons_pressed(JOYPAD_PORT_1);
+        if (screen == 0 && (jin.btn.start || jin.btn.a)) screen = 1;
 #ifdef AUTOTEST
         {   // ares JS input injection is unreliable on libdragon joypad_poll;
             // synthesize: every 150 frames press d_right, every 200 press A.
@@ -160,12 +164,15 @@ int main(void)
             jin.btn.d_right = (f % 150) < 4;
             jin.btn.d_left  = false;
             jin.btn.a       = (f % 200) < 4;
+            jin.btn.start = (f == 200);
             jin.stick_x = 0; jin.stick_y = 0;
         }
 #endif
         frameIdx = (frameIdx + 1) % FB_COUNT;
         t += 0.016f;
 
+        int night = dayT >= 40.0f;   // hoisted: HUD reads it even on title
+        if (screen == 0) goto render;
         // camera drifts a hair with the stick for feel
         camPos.v[0] += jin.stick_x * -0.04f;
         if (camPos.v[0] > 30) camPos.v[0] = 30;
@@ -178,7 +185,7 @@ int main(void)
         if (dir && !(prevDir & dir)) sel = (sel + (dir == 1 ? 1 : 5)) % 6;
         prevDir = dir;
 
-        int night = dayT >= 40.0f;   // light phase done -> growth pauses
+        // (night computed above)
 
         // plants grow slowly (the hum of the grow-op)
         for (int i = 0; i < 6; i++) {
@@ -248,8 +255,15 @@ int main(void)
 #ifdef AUDIO_ON
         if (sfxCool > 0) sfxCool--;
 #endif
+        render:
         t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(65.0f), 5.0f, 300.0f);
-        t3d_viewport_look_at(&viewport, &camPos, &camTarget, &(fm_vec3_t){{0, 1, 0}});
+        if (screen == 0) {
+            camA += 0.004f;
+            fm_vec3_t orbit = (fm_vec3_t){{ sinf(camA) * 115.0f, 34.0f, cosf(camA) * 115.0f + 6.0f }};
+            t3d_viewport_look_at(&viewport, &orbit, &(fm_vec3_t){{0, 12, -6}}, &(fm_vec3_t){{0, 1, 0}});
+        } else {
+            t3d_viewport_look_at(&viewport, &camPos, &camTarget, &(fm_vec3_t){{0, 1, 0}});
+        }
 
         int mi = 0;
         for (int i = 0; i < 6; i++) {
@@ -408,6 +422,19 @@ int main(void)
         }
 #endif
 
+        // ---- title overlay / HUD ----
+        if (screen == 0) {
+            rdpq_set_mode_standard();
+            rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+            rdpq_set_prim_color(RGBA32(0, 0, 0, 170));
+            rdpq_fill_rectangle(34, 66, 286, 148);
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 66, 78, "WEED FARMER 64");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 98, "  a grow-room simulator  ");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 112, "  d-pad: aim  a: water/cut  ");
+            if (((int)(t * 2.0f)) & 1)
+                rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 100, 130, "PRESS START");
+        }
+        if (screen == 1) {
         // ---- HUD (2D) ----
         rdpq_set_mode_standard();
         // bottom bar backdrop
@@ -440,6 +467,7 @@ int main(void)
 #endif
         }
 
+        }   // screen == 1
         rdpq_detach_show();
 
         if ((int)(t * 60) % 180 == 0) {
