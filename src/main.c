@@ -53,7 +53,7 @@ static void fx_burst(fm_vec3_t at, int count, int up, uint8_t col[4])
         p->vel = (fm_vec3_t){{ cosf(a) * 0.10f, up ? 0.35f : 0.05f, sinf(a) * 0.10f }};
         p->life = 30 + (i % 8) * 2;
         p->col[0] = col[0]; p->col[1] = col[1]; p->col[2] = col[2]; p->col[3] = 0xFF;
-        p->size = up ? 28 : 18;
+        p->size = up ? 52 : 36;   // bigger quads: 18-28 were invisible murk at room scale
     }
 }
 
@@ -170,10 +170,24 @@ int main(void)
     rspq_block_t *dplLamp = rspq_block_end();
 
 #ifdef FX_AT_BOOT
-    fx_burst((fm_vec3_t){{-36.0f, 14.0f, 12.0f}}, 16, 0, (uint8_t[4]){80, 140, 255, 0xFF});
+    fx_burst((fm_vec3_t){{36.0f, 12.0f, 12.0f}}, 20, 1, (uint8_t[4]){120, 200, 255, 0xFF});
+    fx_burst((fm_vec3_t){{28.0f, 20.0f, 10.0f}}, 20, 1, (uint8_t[4]){160, 220, 255, 0xFF});
+    fx_burst((fm_vec3_t){{44.0f, 16.0f, 14.0f}}, 20, 1, (uint8_t[4]){80, 180, 255, 0xFF});
+    // int8 size field: >127 wraps negative and the quads vanish — 90 is the fat max
+    for (int i = 0; i < MAXPART; i++) if (parts[i].life > 0) { parts[i].size = 90; parts[i].life = 600; parts[i].vel.v[1] = 0.22f; }
 #endif
     int screen = 0;   // 0 = title, 1 = play, 2 = shop
+#ifdef AUTOSTART
+    screen = 1;   // skip title so fx physics runs for shots
+#endif
+#ifdef CAM_TITLE_FRONT
+    float camA = 0.0f;   // deterministic: face the pots for fx shots
+#else
     float camA = 0.6f;
+#endif
+#ifdef AUTOSTART
+    int screen0_play = 1;
+#endif
     int shopSel = 0;
     int lvLight = 0, lvIrrig = 0, lvBags = 0;
     float growMul = 1.0f;
@@ -489,11 +503,19 @@ int main(void)
                 pr->colorB[0] = pr->colorB[1] = pr->colorB[2] = pr->colorB[3] = 0;
                 live++;
             }
+#ifdef TPXPROBE
+            static int pcount = 0;
+            if ((pcount++) % 30 == 0 && live) {
+                debugf("[tpx] live=%d p0=(%d,%d,%d sz=%d)\n", live,
+                       (int)parts[0].pos.v[0], (int)parts[0].pos.v[1], (int)parts[0].pos.v[2], parts[0].size);
+            }
+#endif
             if (live) {
                 rdpq_set_mode_standard();
                 rdpq_mode_zbuf(true, true);
                 rdpq_mode_zoverride(true, 0, 0);
                 rdpq_mode_combiner(RDPQ_COMBINER1((PRIM,0,ENV,0), (0,0,0,1)));
+                rdpq_set_env_color(RGBA32(255, 255, 255, 255));  // else prim x ENV = ~20% murk
                 tpx_state_from_t3d();
                 // RSP reads this via DMA — must be uncached (cached static =
                 // random-frame COP2/timer crashes, example 18 uses malloc_uncached)
