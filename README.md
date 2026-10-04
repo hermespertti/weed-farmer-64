@@ -30,6 +30,15 @@ Watering burst (tinyPX particles, fixed to true brightness):
 
 ![Watering](docs/watering.png)
 
+## Gameplay demo
+
+42 s of real gameplay, captured headless through angrylion with game audio:
+water, growth, night cycle, harvest payouts, and a roadside-stand shopping
+trip. Rendered 1:1 from emulated VI output — no scaling cheat.
+
+[**wf64-demo.mp4**](https://github.com/hermespertti/weed-farmer-64/releases/download/v0-slice1/wf64-demo.mp4)
+(capture harness: `test/demo.js`)
+
 ## How it plays
 
 - **D-pad / stick** — aim at one of six pots (camera pans with the stick)
