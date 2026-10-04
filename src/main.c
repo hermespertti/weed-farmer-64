@@ -1,5 +1,6 @@
 // Weed Farmer 64 — vertical slice 1: the grow room.
 #include <libdragon.h>
+#include <eeprom.h>
 #include <t3d/t3d.h>
 #include <t3d/t3dmodel.h>
 #include <t3d/tpx.h>
@@ -14,6 +15,27 @@ typedef struct {
     uint8_t col[4];
     int size;          // <10 = mote (floats, no gravity)
 } Particle;
+typedef struct {
+    uint32_t magic;
+    int16_t day, lvLight, lvIrrig, lvBags;
+    int32_t money, harvested;
+    float growMul;
+    struct { float growth, water, quality; } pot[6];
+    uint32_t crc;
+    uint8_t pad[4];      // sizeof = 104 -> 13 eeprom blocks (mult of 8)
+} SaveGame;
+#define SAVE_MAGIC 0x57463601u   // WF64 v1
+static uint32_t save_crc(const SaveGame *s)
+{
+    const uint8_t *p = (const uint8_t *)s;
+    uint32_t c = 0x811C9DC5u;
+    for (uint32_t i = 0; i < offsetof(SaveGame, crc); i++) {
+        c ^= p[i];
+        c *= 0x01000193u;
+    }
+    return c;
+}
+
 static Particle parts[MAXPART];
 static int partHead = 0;
 static TPXParticleS8 *tpxBuf;
@@ -155,10 +177,36 @@ int main(void)
     int shopSel = 0;
     int lvLight = 0, lvIrrig = 0, lvBags = 0;
     float growMul = 1.0f;
+
+    // ---- EEPROM save load (4Kbit = 128B = 16 blocks) ----
+    bool haveSave = false;
+    if (eeprom_present() != EEPROM_NONE && eeprom_total_blocks() >= 16) {
+        SaveGame sg;
+        uint8_t *dst = (uint8_t *)&sg;
+        for (int b = 0; b < (int)sizeof(SaveGame) / EEPROM_BLOCK_SIZE; b++)
+            eeprom_read(b, dst + b * EEPROM_BLOCK_SIZE);
+        if (sg.magic == SAVE_MAGIC && sg.crc == save_crc(&sg)) {
+            day = sg.day; money = sg.money; harvested = sg.harvested;
+            lvLight = sg.lvLight; lvIrrig = sg.lvIrrig; lvBags = sg.lvBags;
+            growMul = sg.growMul;
+            for (int i = 0; i < 6; i++) {
+                pots[i].growth = sg.pot[i].growth;
+                pots[i].water = sg.pot[i].water;
+                pots[i].quality = sg.pot[i].quality;
+            }
+            haveSave = true;
+            debugf("[save] loaded day%d $%d L%d I%d B%d\n", day, money, lvLight, lvIrrig, lvBags);
+        } else {
+            debugf("[save] none/corrupt\n");
+        }
+    } else {
+        debugf("[save] no eeprom\n");
+    }
+    int saveDirty = 0;   // frames since last save-relevant action
+
     for (;;) {
         joypad_poll();
         joypad_inputs_t jin = joypad_get_inputs(JOYPAD_PORT_1);
-        joypad_buttons_t jp = joypad_get_buttons_pressed(JOYPAD_PORT_1);
 #ifdef AUTOTEST
         {   // ares JS input injection is unreliable on libdragon joypad_poll;
             // synthesize: every 150 frames press d_right, every 200 press A.
@@ -197,6 +245,7 @@ int main(void)
                     if (shopSel == 1) { lvIrrig++; }
                     if (shopSel == 2) { lvBags++; }
                     debugf("[shop] bought %d tot $%d (L%d I%d B%d)\n", shopSel, money, lvLight, lvIrrig, lvBags);
+                    saveDirty = 1;
                 }
             }
             pA = jin.btn.a;
@@ -246,6 +295,7 @@ int main(void)
                        sel + 1, pots[sel].quality, val, money);
                 pots[sel] = (Pot){ .pos = pots[sel].pos, .growth = 0.02f,
                                    .water = 0.8f, .quality = 0.8f, .rot = 0.0f };
+                saveDirty = 1;
             } else {
                 pots[sel].water = 1.0f;
                 fx_burst(pots[sel].pos, 16, 0, (uint8_t[4]){80, 140, 255, 0xFF});
@@ -257,7 +307,7 @@ int main(void)
 
         // day cycle: 60 s per day (40 s light, 20 s night)
         dayT += 0.016f;
-        if (dayT > 60.0f) { dayT = 0.0f; day++; }
+        if (dayT > 60.0f) { dayT = 0.0f; day++; saveDirty = 1; }
 
         // ambient grow-room motes (also keeps tpx drawing every frame = stable)
         {
@@ -486,6 +536,36 @@ int main(void)
             }
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 44, 150, "A buy   START/B back");
         }
+        // ---- EEPROM flush: debounced after save-relevant actions ----
+        if (saveDirty > 0 && ++saveDirty > 180) {
+            saveDirty = 0;
+            SaveGame sg = {
+                .magic = SAVE_MAGIC, .day = day,
+                .lvLight = lvLight, .lvIrrig = lvIrrig, .lvBags = lvBags,
+                .money = money, .harvested = harvested, .growMul = growMul,
+            };
+            for (int i = 0; i < 6; i++) {
+                sg.pot[i].growth = pots[i].growth;
+                sg.pot[i].water = pots[i].water;
+                sg.pot[i].quality = pots[i].quality;
+            }
+            sg.crc = save_crc(&sg);
+            // async write; status byte is stale right after the call —
+            // integrity is proven by magic+crc surviving the NEXT boot
+            eeprom_write_bytes(&sg, 0, sizeof(SaveGame));
+            debugf("[save] flush day%d $%d L%d\n", day, money, lvLight);
+#ifdef SAVE_VERIFY
+            {   // libdragon keeps an EEPROM cache refreshed by write; read
+                // the full image back and re-check magic+crc
+                SaveGame rb;
+                eeprom_read_bytes(&rb, 0, sizeof(SaveGame));
+                debugf("[save] verify %s (magic %08x crc %08x/%08x)\n",
+                       (rb.magic == SAVE_MAGIC && rb.crc == save_crc(&rb)) ? "OK" : "BAD",
+                       rb.magic, rb.crc, save_crc(&rb));
+            }
+#endif
+        }
+
         // ---- title overlay / HUD ----
         if (screen == 0) {
             rdpq_set_mode_standard();
@@ -493,7 +573,7 @@ int main(void)
             rdpq_set_prim_color(RGBA32(0, 0, 0, 170));
             rdpq_fill_rectangle(34, 66, 286, 148);
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 66, 78, "WEED FARMER 64");
-            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 98, "  a grow-room simulator  ");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 98, haveSave ? "  CONTINUE  d=%d  $$%d " : " a grow-room simulator ", day, money);
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 112, "  d-pad: aim  a: water/cut  ");
             if (((int)(t * 2.0f)) & 1)
                 rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 100, 130, "PRESS START");

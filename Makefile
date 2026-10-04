@@ -18,6 +18,8 @@ assets_conv = $(addprefix filesystem/,$(notdir $(assets_gltf:%.glb=%.t3dm))) \
 		  $(addprefix filesystem/,$(notdir $(assets_png:%.png=%.sprite))) \
 		  $(addprefix filesystem/sfx/,$(notdir $(assets_sfx:%.wav=%.wav64)))
 
+N64_ROM_SAVETYPE = eeprom4k
+
 all: $(PROJECT_NAME).z64
 
 filesystem/sfx/%.wav64: assets/sfx/%.wav
