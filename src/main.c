@@ -142,8 +142,8 @@ int main(void)
 
     // Grow lights: two purple point lights over the rows (xyz, strength, color).
     struct { fm_vec3_t pos; float strength; color_t color; } lights[2] = {
-        { {{-24, 38, 0}}, 150.0f, {0xC8, 0x60, 0xFF, 0xFF} },
-        { {{ 24, 38, 0}}, 150.0f, {0xFF, 0x40, 0xC0, 0xFF} },
+        { {{-24, 38, 0}}, 120.0f, {0xFF, 0xD0, 0xFF, 0xFF} },   // pink but pale: lets vcolors read
+        { {{ 24, 38, 0}}, 120.0f, {0xFF, 0xC8, 0xE0, 0xFF} },
     };
 
     debugf("[wf64] plant aabb min %d %d %d max %d %d %d\n",
@@ -440,10 +440,11 @@ int main(void)
             float orb = camOrbit * 0.5f;   // C-right swings the viewing angle a bit
             // humanoid-readable framing (vision-verified): 26 right / 58 out
             // the open front, target chest-high; bigger avatar fills the frame.
-            float ox = 26.0f;
-            float oz = 58.0f;
+            float ox = 40.0f;
+            float oz = 88.0f;
             camPos.v[0] += ((farPos.v[0] + ox) - camPos.v[0]) * 0.10f;
-            camPos.v[1] += ((farPos.v[1] + 36.0f) - camPos.v[1]) * 0.10f;
+            // above the lamp line (lamps hang ~38u) so nothing eclipses him
+            camPos.v[1] += ((farPos.v[1] + 62.0f) - camPos.v[1]) * 0.10f;
             camPos.v[2] += ((farPos.v[2] + oz) - camPos.v[2]) * 0.10f;
             camTarget.v[0] += (farPos.v[0] - camTarget.v[0]) * 0.30f;
             camTarget.v[1] += ((farPos.v[1] + 14.0f) - camTarget.v[1]) * 0.30f;
@@ -512,7 +513,7 @@ int main(void)
                                 &(fm_vec3_t){{0, 50, 40}}, 60.0f, false);
             t3d_light_set_count(1);
         } else {
-            t3d_light_set_ambient((uint8_t[4]){110, 70, 150, 0xFF});  // walk mode readability
+            t3d_light_set_ambient((uint8_t[4]){150, 130, 170, 0xFF});  // walk mode readability
             for (int i = 0; i < 2; i++)
                 t3d_light_set_point(i, &lights[i].color.r, &lights[i].pos, lights[i].strength, false);
             t3d_light_set_count(2);
@@ -593,7 +594,7 @@ int main(void)
             float lean = sinf(walkPh) * 0.06f;               // weight shift
             T3DMat4FP *mfp = &matFP[17 + 18 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
-                (float[3]){0.009f, 0.009f, 0.009f},           // 6048u raw -> 54u tall chunky hero
+                (float[3]){0.0063f, 0.0063f, 0.0063f},         // 6048u raw -> 38u tall (~2.5x pots)
                 (float[3]){lean, farYaw, lean * 0.6f},
                 (float[3]){farPos.v[0], farPos.v[1] + bob, farPos.v[2]});
             t3d_matrix_set(mfp, true);
