@@ -22,9 +22,11 @@ typedef struct {
     float growMul;
     struct { float growth, water, quality; } pot[6];
     uint32_t crc;
-    uint8_t pad[4];      // sizeof = 104 -> 13 eeprom blocks (mult of 8)
+    int8_t strain[6];    // per-pot planted strain (-1 empty)
+    uint8_t pad[2];
+    int32_t bestDay;     // longest day survived
 } SaveGame;
-#define SAVE_MAGIC 0x57463601u   // WF64 v1
+#define SAVE_MAGIC 0x57463602u   // WF64 v2 (strains + best day)
 static uint32_t save_crc(const SaveGame *s)
 {
     const uint8_t *p = (const uint8_t *)s;
@@ -63,7 +65,24 @@ typedef struct {
     float water;       // 0..1
     float quality;     // 0..1 running avg of water while growing
     float rot;
+    int8_t strain;     // -1 = empty pot, else index into strains[]
+    int8_t seedSel;    // transient: which strain the A button will plant
 } Pot;
+
+// ---- strains: speed x value x thirst tradeoffs ----
+typedef struct {
+    const char *name;
+    float growMul;    // growth rate multiplier
+    float valMul;     // harvest value multiplier
+    float thirst;     // water drain multiplier
+    uint8_t col[4];   // bud color for the tell
+} Strain;
+static const Strain strains[4] = {
+    { "SATTLIME",  1.00f, 1.00f, 1.00f, {200, 96, 255, 255} },  // baseline
+    { "BLUEBERRY", 0.75f, 1.60f, 1.15f, { 90, 120, 255, 255} },  // slow rich
+    { "JRK",       1.40f, 0.70f, 1.35f, {255, 210,  80, 255} },  // fast junk
+    { "GELATO",    1.10f, 1.25f, 0.75f, {255, 130, 170, 255} },  // thrifty sweet
+};
 
 int main(void)
 {
@@ -121,8 +140,9 @@ int main(void)
             if (mat) {
                 mat->renderFlags |= T3D_FLAG_SHADED;
                 mat->colorCombiner = RDPQ_COMBINER_SHADE;
-                if (k == 3) {   // farmer: boost his material so grow-lights can't crush him to maroon
-                    mat->renderFlags |= T3D_FLAG_NO_LIGHT;    // raw vcolors (isolation-proven)
+                if (k == 3) {   // farmer: FLAT combiner + hi-vis material color
+                    mat->colorCombiner = RDPQ_COMBINER_FLAT;
+                    mat->primColor = RGBA32(255, 230, 40, 255);   // unmistakable yellow body
                 }
                 debugf("[ab] forced SHADED on %s\n", mat->name);
             }
@@ -137,6 +157,8 @@ int main(void)
             .water = 0.5f,
             .quality = 0.5f,
             .rot = 0.0f,
+            .strain = (i % 3 == 2) ? -1 : (int8_t)(i % 4),  // pot 3 & 6 start empty-ish
+            .seedSel = 0,
         };
     }
 
@@ -161,6 +183,8 @@ int main(void)
 
     int money = 0;           // dollars from sold buds
     int harvested = 0;       // total buds cut
+    int bestDay = 0;         // longest day survived (EEPROM-persisted)
+    int8_t gSeedSel = 0;     // currently selected strain to plant
     int sel = 2;             // player-selected pot
     uint32_t prevDir = 0;    // edge detection for d-pad/stick cycling
     int day = 1;
@@ -233,9 +257,11 @@ int main(void)
                 pots[i].growth = sg.pot[i].growth;
                 pots[i].water = sg.pot[i].water;
                 pots[i].quality = sg.pot[i].quality;
+                pots[i].strain = sg.strain[i];
             }
+            bestDay = sg.bestDay;
             haveSave = true;
-            debugf("[save] loaded day%d $%d L%d I%d B%d\n", day, money, lvLight, lvIrrig, lvBags);
+            debugf("[save] loaded day%d $%d L%d I%d B%d best%d\n", day, money, lvLight, lvIrrig, lvBags, bestDay);
         } else {
             debugf("[save] none/corrupt\n");
         }
@@ -255,7 +281,8 @@ int main(void)
             jin.btn.d_left  = false;
             jin.btn.a       = (f % 200) < 4;
             jin.btn.start = ((f >= 200) && (f % 400) == 0);  // open/close shop visits
-            jin.btn.b     = (f == 900) || (f == 1700);
+            jin.btn.l     = ((f % 300) == 100);               // seed cycle
+            jin.btn.b   = (f == 900) || (f == 1700);
             jin.stick_x = 0; jin.stick_y = 0;
             // autopilot: park the farmer beside a cycling pot (sel follows by proximity)
             {   int wp = (f / 480) % 6;
@@ -320,29 +347,44 @@ int main(void)
         // plants grow slowly (the hum of the grow-op)
         for (int i = 0; i < 6; i++) {
             if (!night && pots[i].growth < 1.0f) {
-                pots[i].growth += 0.0003f * (0.3f + pots[i].water) * growMul;
+                pots[i].growth += 0.0003f * (0.3f + pots[i].water) * growMul
+                    * (pots[i].strain >= 0 ? strains[pots[i].strain].growMul : 1.0f);
                 if (pots[i].growth > 1.0f) pots[i].growth = 1.0f;
                 // quality tracks how well-watered the grow was
                 pots[i].quality += (pots[i].water - pots[i].quality) * 0.02f;
             }
-            pots[i].water -= (night ? 0.00002f : 0.00008f) * (1.0f - 0.35f * lvIrrig);
+            pots[i].water -= (night ? 0.00002f : 0.00008f) * (1.0f - 0.35f * lvIrrig)
+                * (pots[i].strain >= 0 ? strains[pots[i].strain].thirst : 0.4f);
             if (pots[i].water < 0.0f) pots[i].water = 0.0f;
             pots[i].rot = sinf(t * 0.8f + i) * 0.05f;  // fan breeze sway
         }
         // A: water if thirsty/growing, harvest if ripe (walk mode: near the pot)
         if (jin.btn.a && canAct) {
-            if (pots[sel].growth >= 1.0f) {
-                int val = (int)((10 + pots[sel].quality * 40.0f) * (1.0f + 0.25f * lvBags));
+            if (pots[sel].strain < 0) {
+                // empty pot: plant the selected strain
+                pots[sel].strain = gSeedSel;
+                pots[sel].growth = 0.02f;
+                pots[sel].water = 0.8f;
+                pots[sel].quality = 0.8f;
+                fx_burst(pots[sel].pos, 14, 0, (uint8_t *)strains[pots[sel].strain].col);
+                debugf("[wf64] planted pot %d %s\n", sel + 1, strains[pots[sel].strain].name);
+                saveDirty = 1;
+            } else if (pots[sel].growth >= 1.0f) {
+                const Strain *sp = &strains[pots[sel].strain];
+                int val = (int)((10 + pots[sel].quality * 40.0f) * (1.0f + 0.25f * lvBags) * sp->valMul);
                 money += val;
                 harvested++;
-                fx_burst(pots[sel].pos, 24, 1, (uint8_t[4]){220, 90, 255, 0xFF});
+                fx_burst(pots[sel].pos, 24, 1, (uint8_t *)sp->col);
 #ifdef AUDIO_ON
                 if (!mixer_ch_playing(7)) mixer_ch_play(7, &sndHarvest.wave);
 #endif
-                debugf("[wf64] harvested pot %d q=%.2f $%d (tot $%d)\n",
-                       sel + 1, pots[sel].quality, val, money);
-                pots[sel] = (Pot){ .pos = pots[sel].pos, .growth = 0.02f,
-                                   .water = 0.8f, .quality = 0.8f, .rot = 0.0f };
+                debugf("[wf64] harvested pot %d %s q=%.2f $%d (tot $%d)\n",
+                       sel + 1, sp->name, pots[sel].quality, val, money);
+                // pot goes EMPTY - player must plant (d-up/d-down picks strain)
+                pots[sel].strain = -1;
+                pots[sel].growth = 0.0f;
+                pots[sel].water = 0.3f;
+                pots[sel].quality = 0.5f;
                 saveDirty = 1;
             } else {
                 pots[sel].water = 1.0f;
@@ -355,7 +397,7 @@ int main(void)
 
         // day cycle: 60 s per day (40 s light, 20 s night)
         dayT += 0.016f;
-        if (dayT > 60.0f) { dayT = 0.0f; day++; saveDirty = 1; }
+        if (dayT > 60.0f) { dayT = 0.0f; day++; if (day > bestDay) bestDay = day; saveDirty = 1; }
 
         // ambient grow-room motes (also keeps tpx drawing every frame = stable)
         {
@@ -392,6 +434,12 @@ int main(void)
         prevC = jin.btn.c_right;
         if (jin.btn.c_up)    camOrbit += 0.045f;   // hold C-up/C-down: orbit cam
         if (jin.btn.c_down)  camOrbit -= 0.045f;
+        // L/R cycle the global seed choice; empty pots get it on A
+        {   static bool prevL = false, prevR = false;
+            if (jin.btn.l && !prevL) gSeedSel = (gSeedSel + 3) % 4;
+            if (jin.btn.r && !prevR) gSeedSel = (gSeedSel + 1) % 4;
+            prevL = jin.btn.l; prevR = jin.btn.r;
+        }
 
         // ---- third-person farmer movement (tank controls) ----
         // facingDir(yaw) = (sin yaw, cos yaw); yaw=0 faces +Z.
@@ -716,7 +764,10 @@ int main(void)
                 sg.pot[i].growth = pots[i].growth;
                 sg.pot[i].water = pots[i].water;
                 sg.pot[i].quality = pots[i].quality;
+                sg.strain[i] = pots[i].strain;
             }
+            if (day > bestDay) bestDay = day;
+            sg.bestDay = bestDay;
             sg.crc = save_crc(&sg);
             // async write; status byte is stale right after the call —
             // integrity is proven by magic+crc surviving the NEXT boot
@@ -743,6 +794,7 @@ int main(void)
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 66, 78, "WEED FARMER 64");
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 98, haveSave ? "  CONTINUE  d=%d  $$%d " : " a grow-room simulator ", day, money);
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 112, "  d-pad: aim  a: water/cut  ");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 124, "  L/R: pick seed  C: walk cam ");
             if (((int)(t * 2.0f)) & 1)
                 rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 100, 130, "PRESS START");
         }
@@ -760,13 +812,18 @@ int main(void)
         rdpq_set_prim_color(RGBA32(80, 200, 90, 255));
         rdpq_fill_rectangle(200, 230, 200 + (int)(100.0f * pots[sel].growth), 238);
         // ready marker
-        if (pots[sel].growth >= 1.0f) {
-            rdpq_set_prim_color(RGBA32(255, 80, 220, 255));
+        if (pots[sel].growth >= 1.0f && pots[sel].strain >= 0) {
+            const uint8_t *c = strains[pots[sel].strain].col;
+            rdpq_set_prim_color(RGBA32(c[0], c[1], c[2], 255));
             rdpq_fill_rectangle(304, 230, 312, 238);
         }
         rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 208,
             "POT %d/6 %s  $$%d  CUT %d",
             sel + 1, night ? "NIGHT" : "DAY " , money, harvested);
+        if (pots[sel].strain >= 0)
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 208, "[%s]", strains[pots[sel].strain].name);
+        else
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 208, "[EMPTY] L/R:seed A:plant");
         rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 196, "DAY %d", day);
         if (pots[sel].growth >= 1.0f)
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 190, "RIPE! A=HARVEST");
