@@ -438,17 +438,14 @@ int main(void)
             // so the chase cam rides the open side: farmer always framed
             // against the room interior, never clipped by geometry.
             float orb = camOrbit * 0.5f;   // C-right swings the viewing angle a bit
-            // humanoid-readable framing (vision-verified): 26 right / 58 out
-            // the open front, target chest-high; bigger avatar fills the frame.
-            float ox = 40.0f;
-            float oz = 88.0f;
-            camPos.v[0] += ((farPos.v[0] + ox) - camPos.v[0]) * 0.10f;
-            // above the lamp line (lamps hang ~38u) so nothing eclipses him
-            camPos.v[1] += ((farPos.v[1] + 62.0f) - camPos.v[1]) * 0.10f;
-            camPos.v[2] += ((farPos.v[2] + oz) - camPos.v[2]) * 0.10f;
-            camTarget.v[0] += (farPos.v[0] - camTarget.v[0]) * 0.30f;
-            camTarget.v[1] += ((farPos.v[1] + 14.0f) - camTarget.v[1]) * 0.30f;
-            camTarget.v[2] += (farPos.v[2] - camTarget.v[2]) * 0.30f;
+            // high front view over the open side: full room, both pot rows,
+            // farmer visible among them (classic fixed grow-room angle).
+            camPos.v[0] += ((farPos.v[0] * 0.5f + 18.0f * sinf(camOrbit)) - camPos.v[0]) * 0.10f;
+            camPos.v[1] += (58.0f - camPos.v[1]) * 0.10f;
+            camPos.v[2] += (78.0f - camPos.v[2]) * 0.10f;
+            camTarget.v[0] += (0.0f - camTarget.v[0]) * 0.20f;
+            camTarget.v[1] += (2.0f - camTarget.v[1]) * 0.20f;
+            camTarget.v[2] += (-2.0f - camTarget.v[2]) * 0.20f;
             static int mdbg = 0;
             if ((mdbg++ % 120) == 0)
                 debugf("[far] pos %d %d yaw %d sel %d act %d cam %d %d %d tgt %d %d %d\n",
