@@ -23,10 +23,12 @@ typedef struct {
     struct { float growth, water, quality; } pot[6];
     uint32_t crc;
     int8_t strain[6];    // per-pot planted strain (-1 empty)
+    uint8_t owned;       // bit i = strain i seeds bought at the stand
+    int8_t gSeedSel;     // last chosen seed
     uint8_t pad[2];
     int32_t bestDay;     // longest day survived
 } SaveGame;
-#define SAVE_MAGIC 0x57463602u   // WF64 v2 (strains + best day)
+#define SAVE_MAGIC 0x57463603u   // WF64 v3 (strain ownership)
 static uint32_t save_crc(const SaveGame *s)
 {
     const uint8_t *p = (const uint8_t *)s;
@@ -185,6 +187,7 @@ int main(void)
     int harvested = 0;       // total buds cut
     int bestDay = 0;         // longest day survived (EEPROM-persisted)
     int8_t gSeedSel = 0;     // currently selected strain to plant
+    uint8_t ownedMask = 0x01;  // SATTLIME free; others bought at the stand
     int sel = 2;             // player-selected pot
     uint32_t prevDir = 0;    // edge detection for d-pad/stick cycling
     int day = 1;
@@ -230,6 +233,9 @@ int main(void)
 #ifdef AUTOSTART
     screen = 1;   // skip title so fx physics runs for shots
 #endif
+#ifdef SEEDSHOP
+    screen = 2;   // shop open at boot for UI shots
+#endif
 #ifdef CAM_TITLE_FRONT
     float camA = 0.0f;   // deterministic: face the pots for fx shots
 #else
@@ -259,7 +265,9 @@ int main(void)
                 pots[i].quality = sg.pot[i].quality;
                 pots[i].strain = sg.strain[i];
             }
+            if (sg.gSeedSel >= 0 && sg.gSeedSel < 4) gSeedSel = sg.gSeedSel;
             bestDay = sg.bestDay;
+            ownedMask = sg.owned ? sg.owned : 0x01;
             haveSave = true;
             debugf("[save] loaded day%d $%d L%d I%d B%d best%d\n", day, money, lvLight, lvIrrig, lvBags, bestDay);
         } else {
@@ -312,21 +320,31 @@ int main(void)
             if (jin.btn.d_up   || jin.stick_y >  40) dn = 1;
             if (jin.btn.d_down || jin.stick_y < -40) dn = 2;
             static uint32_t pshop = 0;
-            if (dn && !(pshop & dn)) shopSel = (shopSel + (dn == 1 ? 2 : 1)) % 3;
+            if (dn && !(pshop & dn)) shopSel = (shopSel + (dn == 1 ? 2 : 1)) % 6;
             pshop = dn;
             static bool pA = false;
             if (jin.btn.a && !pA) {
-                static const int cost[3] = {40, 70, 30};
-                int maxed = (shopSel == 0 && lvLight >= 3) ||
-                            (shopSel == 1 && lvIrrig >= 2) ||
-                            (shopSel == 2 && lvBags >= 3);
-                if (!maxed && money >= cost[shopSel]) {
-                    money -= cost[shopSel];
-                    if (shopSel == 0) { lvLight++; growMul = 1.0f + 0.5f * lvLight; }
-                    if (shopSel == 1) { lvIrrig++; }
-                    if (shopSel == 2) { lvBags++; }
-                    debugf("[shop] bought %d tot $%d (L%d I%d B%d)\n", shopSel, money, lvLight, lvIrrig, lvBags);
-                    saveDirty = 1;
+                static const int cost[6] = {40, 70, 30, 50, 35, 60};
+                if (shopSel < 3) {
+                    int maxed = (shopSel == 0 && lvLight >= 3) ||
+                                (shopSel == 1 && lvIrrig >= 2) ||
+                                (shopSel == 2 && lvBags >= 3);
+                    if (!maxed && money >= cost[shopSel]) {
+                        money -= cost[shopSel];
+                        if (shopSel == 0) { lvLight++; growMul = 1.0f + 0.5f * lvLight; }
+                        if (shopSel == 1) { lvIrrig++; }
+                        if (shopSel == 2) { lvBags++; }
+                        debugf("[shop] bought %d tot $%d (L%d I%d B%d)\n", shopSel, money, lvLight, lvIrrig, lvBags);
+                        saveDirty = 1;
+                    }
+                } else {
+                    int bit = 1 << (shopSel - 2);   // strain index = row-2
+                    if (!(ownedMask & bit) && money >= cost[shopSel]) {
+                        money -= cost[shopSel];
+                        ownedMask |= bit;
+                        debugf("[shop] seeds strain %d owned %02x tot $%d\n", shopSel - 2, ownedMask, money);
+                        saveDirty = 1;
+                    }
                 }
             }
             pA = jin.btn.a;
@@ -339,6 +357,7 @@ int main(void)
         if (screen == 3) goto render;  // paused: no growth, no day tick, no walk
         if (!walkMode) {
             // menu-cam: stick drift + d-pad pot cycling (classic controls)
+            // (lights keep the saturated grow-room mood)
             camPos.v[0] += jin.stick_x * -0.04f;
             if (camPos.v[0] > 30) camPos.v[0] = 30;
             if (camPos.v[0] < -30) camPos.v[0] = -30;
@@ -444,8 +463,8 @@ int main(void)
         if (jin.btn.c_down)  camOrbit -= 0.045f;
         // L/R cycle the global seed choice; empty pots get it on A
         {   static bool prevL = false, prevR = false;
-            if (jin.btn.l && !prevL) gSeedSel = (gSeedSel + 3) % 4;
-            if (jin.btn.r && !prevR) gSeedSel = (gSeedSel + 1) % 4;
+            if (jin.btn.l && !prevL) for (int k = 0; k < 4; k++) { gSeedSel = (gSeedSel + 3) % 4; if (ownedMask & (1 << gSeedSel)) break; }
+            if (jin.btn.r && !prevR) for (int k = 0; k < 4; k++) { gSeedSel = (gSeedSel + 1) % 4; if (ownedMask & (1 << gSeedSel)) break; }
             prevL = jin.btn.l; prevR = jin.btn.r;
         }
 
@@ -736,12 +755,25 @@ int main(void)
             rdpq_fill_rectangle(34, 40, 286, 190);
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 96, 48, "ROADSIDE STAND");
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 200, 58, "$$%d", money);
-            static const char *nm[3] = { "GROW LIGHT +50%", "DRIP IRRIGATION", "THICK BAGS +25%" };
-            static const int cost[3] = {40, 70, 30};
+            static const char *nm[6] = { "GROW LIGHT +50%", "DRIP IRRIGATION", "THICK BAGS +25%",
+                                          "BLUEBERRY SEEDS", "JRK SEEDS", "GELATO SEEDS" };
+            static const int cost[6] = {40, 70, 30, 50, 35, 60};
             int lv[3] = {lvLight, lvIrrig, lvBags};
             int mx[3] = {3, 2, 3};
-            for (int i = 0; i < 3; i++) {
-                int y = 76 + i * 22;
+            // seeds: shop rows 3..5 map to strains 1..3 (0 is free baseline)
+            int seedOwned[3] = { (ownedMask>>1)&1, (ownedMask>>2)&1, (ownedMask>>3)&1 };
+            for (int i = 0; i < 6; i++) {
+                int y = 74 + i * 18;
+                if (i >= 3) {
+                    rdpq_set_mode_standard();
+                    rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+                    const uint8_t *sc = strains[i - 2].col;
+                    rdpq_set_prim_color(RGBA32(sc[0], sc[1], sc[2], 255));
+                    rdpq_fill_rectangle(44, y + 2, 50, y + 10);
+                    rdpq_set_mode_standard();
+                    rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+                    rdpq_set_prim_color(RGBA32(255, 255, 255, 255));
+                }
                 if (i == shopSel) {
                     // text printf above switched rdpq to TEXT mode — must re-arm
                     // standard+FLAT or this fill renders through the text combiner (invisible)
@@ -753,12 +785,19 @@ int main(void)
                     rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
                     rdpq_set_prim_color(RGBA32(255, 255, 255, 255));
                 }
-                if (lv[i] >= mx[i])
-                    rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 50, y, "  %s   MAXED ", nm[i]);
-                else
-                    rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 50, y, "  %s $$%d Lv%d", nm[i], cost[i], lv[i]);
+                if (i < 3) {
+                    if (lv[i] >= mx[i])
+                        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 54, y, "  %s   MAXED ", nm[i]);
+                    else
+                        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 54, y, "  %s $$%d Lv%d", nm[i], cost[i], lv[i]);
+                } else {
+                    if (seedOwned[i - 3])
+                        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 54, y, "  %s  OWNED", nm[i]);
+                    else
+                        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 54, y, "  %s $$%d", nm[i], cost[i]);
+                }
             }
-            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 44, 150, "A buy   START/B back");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 44, 184, "A buy   START/B back");
         }
         // ---- EEPROM flush: debounced after save-relevant actions ----
         if (saveDirty > 0 && ++saveDirty > 180) {
@@ -774,8 +813,10 @@ int main(void)
                 sg.pot[i].quality = pots[i].quality;
                 sg.strain[i] = pots[i].strain;
             }
+            sg.gSeedSel = gSeedSel;
             if (day > bestDay) bestDay = day;
             sg.bestDay = bestDay;
+            sg.owned = ownedMask;
             sg.crc = save_crc(&sg);
             // async write; status byte is stale right after the call —
             // integrity is proven by magic+crc surviving the NEXT boot
