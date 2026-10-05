@@ -793,6 +793,8 @@ int main(void)
             rdpq_fill_rectangle(34, 66, 286, 148);
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 66, 78, "WEED FARMER 64");
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 98, haveSave ? "  CONTINUE  d=%d  $$%d " : " a grow-room simulator ", day, money);
+            if (bestDay > 0)
+                rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 106, "  best run: day %d        ", bestDay);
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 112, "  d-pad: aim  a: water/cut  ");
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 124, "  L/R: pick seed  C: walk cam ");
             if (((int)(t * 2.0f)) & 1)
@@ -824,7 +826,7 @@ int main(void)
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 208, "[%s]", strains[pots[sel].strain].name);
         else
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 208, "[EMPTY] L/R:seed A:plant");
-        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 196, "DAY %d", day);
+        rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 196, "DAY %d  BEST %d", day, bestDay);
         if (pots[sel].growth >= 1.0f)
             rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 120, 190, "RIPE! A=HARVEST");
         rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 60, 219, "WATER");
