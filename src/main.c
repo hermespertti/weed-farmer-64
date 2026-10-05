@@ -142,8 +142,8 @@ int main(void)
 
     // Grow lights: two purple point lights over the rows (xyz, strength, color).
     struct { fm_vec3_t pos; float strength; color_t color; } lights[2] = {
-        { {{-24, 38, 0}}, 120.0f, {0xFF, 0xD0, 0xFF, 0xFF} },   // pink but pale: lets vcolors read
-        { {{ 24, 38, 0}}, 120.0f, {0xFF, 0xC8, 0xE0, 0xFF} },
+        { {{-24, 38, 0}}, 150.0f, {0xC8, 0x60, 0xFF, 0xFF} },
+        { {{ 24, 38, 0}}, 150.0f, {0xFF, 0x40, 0xC0, 0xFF} },
     };
 
     debugf("[wf64] plant aabb min %d %d %d max %d %d %d\n",
@@ -510,7 +510,7 @@ int main(void)
                                 &(fm_vec3_t){{0, 50, 40}}, 60.0f, false);
             t3d_light_set_count(1);
         } else {
-            t3d_light_set_ambient((uint8_t[4]){150, 130, 170, 0xFF});  // walk mode readability
+            t3d_light_set_ambient((uint8_t[4]){110, 70, 150, 0xFF});  // walk mode readability
             for (int i = 0; i < 2; i++)
                 t3d_light_set_point(i, &lights[i].color.r, &lights[i].pos, lights[i].strength, false);
             t3d_light_set_count(2);
