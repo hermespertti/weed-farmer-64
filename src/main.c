@@ -282,6 +282,9 @@ int main(void)
             jin.btn.a       = (f % 200) < 4;
             jin.btn.start = ((f >= 200) && (f % 400) == 0);  // open/close shop visits
             jin.btn.l     = ((f % 300) == 100);               // seed cycle
+            // edge-only Z: one-frame press at f950 (after shop closes at 900).
+            // pause stays open until soak ends; shot captures it any time after.
+            jin.btn.z     = (f == 950);
             jin.btn.b   = (f == 900) || (f == 1700);
             jin.stick_x = 0; jin.stick_y = 0;
             // autopilot: park the farmer beside a cycling pot (sel follows by proximity)
@@ -300,6 +303,10 @@ int main(void)
         prevStart = jin.btn.start; prevB = jin.btn.b;
         if (screen == 1 && eStart) { screen = 2; debugf("[ui] OPEN shop\n"); }
         else if (screen == 2 && (eB || eStart)) { screen = 1; debugf("[ui] CLOSE shop\n"); }
+        static bool prevZ = false;
+        bool eZ = jin.btn.z && !prevZ; prevZ = jin.btn.z;
+        if (screen == 1 && eZ) screen = 3;          // pause + how-to
+        else if (screen == 3 && (eZ || eB)) screen = 1;
         if (screen == 2) {
             uint32_t dn = 0;
             if (jin.btn.d_up   || jin.stick_y >  40) dn = 1;
@@ -329,6 +336,7 @@ int main(void)
 
         int night = dayT >= 40.0f;   // hoisted: HUD reads it even on title
         if (screen == 0) goto render;
+        if (screen == 3) goto render;  // paused: no growth, no day tick, no walk
         if (!walkMode) {
             // menu-cam: stick drift + d-pad pot cycling (classic controls)
             camPos.v[0] += jin.stick_x * -0.04f;
@@ -800,6 +808,33 @@ int main(void)
             if (((int)(t * 2.0f)) & 1)
                 rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 100, 130, "PRESS START");
         }
+        if (screen == 3) {
+            // ---- pause / how-to ----
+            rdpq_set_mode_standard();
+            rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+            rdpq_set_prim_color(RGBA32(0, 0, 0, 210));
+            rdpq_fill_rectangle(20, 12, 300, 196);
+            rdpq_set_prim_color(RGBA32(255, 230, 40, 255));
+            rdpq_fill_rectangle(20, 12, 300, 15);
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 96, 22, "PAUSED");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 38, " STICK  walk (third person)");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 50, " d-pad select pot / strafe");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 62, " A      water | plant | cut");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 74, " L/R    pick seed strain");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 86, " C      camera  Z unpause");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 98, " START  roadside stand");
+            rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 30, 114, " STRAINS   grow value thirst");
+            for (int i = 0; i < 4; i++) {
+                rdpq_set_prim_color(RGBA32(strains[i].col[0], strains[i].col[1], strains[i].col[2], 255));
+                rdpq_fill_rectangle(30, 128 + i * 11, 36, 136 + i * 11);
+                rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 42, 128 + i * 11,
+                    " %-9s %4.0f%%  %4.0f%%  %4.0f%%", strains[i].name,
+                    strains[i].growMul * 100.0f, strains[i].valMul * 100.0f, strains[i].thirst * 100.0f);
+            }
+            if (((int)(t * 2.0f)) & 1)
+                rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 84, 182, "Z/B: BACK TO GROWING");
+            goto render_done;
+        }
         if (screen == 1) {
         // ---- HUD (2D) ----
         rdpq_set_mode_standard();
@@ -839,6 +874,7 @@ int main(void)
         }
 
         }   // screen == 1
+        render_done:
         rdpq_detach_show();
 
         if ((int)(t * 60) % 180 == 0) {
