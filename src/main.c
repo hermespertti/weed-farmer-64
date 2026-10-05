@@ -142,10 +142,7 @@ int main(void)
             if (mat) {
                 mat->renderFlags |= T3D_FLAG_SHADED;
                 mat->colorCombiner = RDPQ_COMBINER_SHADE;
-                if (k == 3) {   // farmer: FLAT combiner + hi-vis material color
-                    mat->colorCombiner = RDPQ_COMBINER_FLAT;
-                    mat->primColor = RGBA32(255, 230, 40, 255);   // unmistakable yellow body
-                }
+
                 debugf("[ab] forced SHADED on %s\n", mat->name);
             }
         }
