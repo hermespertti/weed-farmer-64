@@ -41,10 +41,14 @@ trip. Rendered 1:1 from emulated VI output — no scaling cheat.
 
 ## How it plays
 
-- **D-pad / stick** — aim at one of six pots (camera pans with the stick)
-- **A** — water a thirsty plant, or cut it when ripe
+- **D-pad** — select pot (menu cam) / strafe (walk cam)
+- **Stick** — walk in third person
+- **A** — water a thirsty plant, plant a seed in an empty pot, or cut when ripe
+- **L / R** — pick seed strain (only strains you own)
+- **Z** — pause + strain cheat-sheet
+- **C-right** — toggle third-person walk cam
 - **Start** — open/close the roadside stand
-- **B** — back out of the shop
+- **B** — back out of the shop / unpause
 
 Plants grow during the 40 s light phase and pause at night. Cutting a ripe
 bud pays out by **water quality**: keep a plant well-watered the whole grow
@@ -55,6 +59,18 @@ and it sells for up to ~$50 instead of ~$25. Sink the cash at the stand:
 | Grow Light +50% | $40 | 3 | Growth speed |
 | Drip Irrigation | $70 | 2 | Water drains 35%/lvl slower |
 | Thick Bags +25% | $30 | 3 | Sale price |
+
+Strains (seeds at the stand; free starter is Sttlime):
+
+| Strain | Seed | Grow | Value | Thirst |
+|---|---|---|---|---|
+| Sttlime | free | 1.0x | 1.0x | normal |
+| Blueberry | $50 | 0.85x | 1.4x | thirsty |
+| JRK | $35 | 1.3x | 0.8x | hardy |
+| Gelato | $60 | 0.75x | 1.8x | very thirsty |
+
+Your best run (day reached), owned strains and last seed pick persist in
+EEPROM (save v3).
 
 Everything saves to **EEPROM** (4 Kbit, debounced writes) — day, money,
 upgrade levels and every pot's state survive a power cycle. The title screen
