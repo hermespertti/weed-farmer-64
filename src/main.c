@@ -80,6 +80,11 @@ int main(void)
     wav64_open(&sndWater,   "rom:/sfx/water.wav64");
     wav64_open(&sndHarvest, "rom:/sfx/harvest.wav64");
     wav64_open(&sndThirst,  "rom:/sfx/thirsty.wav64");
+    xm64player_t music;
+    xm64player_open(&music, "rom:/music/db_key.xm64");
+    xm64player_set_loop(&music, true);
+    xm64player_play(&music, 0);          // mixer ch0-3; SFX live on ch5-7
+    debugf("[music] playing %dch\n", xm64player_num_channels(&music));
     int sfxCool = 0;
 #endif
 
@@ -99,22 +104,26 @@ int main(void)
                            rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
     T3DViewport viewport = t3d_viewport_create_buffered(FB_COUNT);
 
-    T3DMat4FP *matFP = malloc_uncached(sizeof(T3DMat4FP) * 17 * FB_COUNT);
+    T3DMat4FP *matFP = malloc_uncached(sizeof(T3DMat4FP) * 18 * FB_COUNT);
 
     T3DModel *mPlant = t3d_model_load("rom:/plant.t3dm");
     T3DModel *mSprout = t3d_model_load("rom:/sprout.t3dm");
     T3DModel *mPot   = t3d_model_load("rom:/pot.t3dm");
     T3DModel *mLamp  = t3d_model_load("rom:/lamp.t3dm");
+    T3DModel *mFarmer = t3d_model_load("rom:/farmer.t3dm");
 
     {
         // force lit+flat combiner on generated models (dummy materials)
-        T3DModel *mm[3] = { mPlant, mPot, mSprout };
-        const char *mn[3] = { "plantMat", "potMat", "sproutMat" };
-        for (int k = 0; k < 3; k++) {
+        T3DModel *mm[4] = { mPlant, mPot, mSprout, mFarmer };
+        const char *mn[4] = { "plantMat", "potMat", "sproutMat", "farmerMat" };
+        for (int k = 0; k < 4; k++) {
             T3DMaterial *mat = t3d_model_get_material(mm[k], mn[k]);
             if (mat) {
                 mat->renderFlags |= T3D_FLAG_SHADED;
                 mat->colorCombiner = RDPQ_COMBINER_SHADE;
+                if (k == 3) {   // farmer: boost his material so grow-lights can't crush him to maroon
+                    mat->renderFlags |= T3D_FLAG_NO_LIGHT;    // raw vcolors (isolation-proven)
+                }
                 debugf("[ab] forced SHADED on %s\n", mat->name);
             }
         }
@@ -143,6 +152,9 @@ int main(void)
     debugf("[wf64] pot aabb min %d %d %d max %d %d %d\n",
            mPot->aabbMin[0], mPot->aabbMin[1], mPot->aabbMin[2],
            mPot->aabbMax[0], mPot->aabbMax[1], mPot->aabbMax[2]);
+    debugf("[wf64] farmer aabb min %d %d %d max %d %d %d\n",
+           mFarmer->aabbMin[0], mFarmer->aabbMin[1], mFarmer->aabbMin[2],
+           mFarmer->aabbMax[0], mFarmer->aabbMax[1], mFarmer->aabbMax[2]);
     debugf("[wf64] lamp aabb min %d %d %d max %d %d %d\n",
            mLamp->aabbMin[0], mLamp->aabbMin[1], mLamp->aabbMin[2],
            mLamp->aabbMax[0], mLamp->aabbMax[1], mLamp->aabbMax[2]);
@@ -159,6 +171,17 @@ int main(void)
 
     fm_vec3_t camPos = {{0, 22, 104}};
     fm_vec3_t camTarget = {{0, 16, -8}};
+    // third-person farmer: pos, facing yaw, walk bob phase, mode
+    int canAct = 1;   // proximity gate for A (always open in menu-cam)
+    fm_vec3_t farPos = {{0, -2.0f, 60.0f}};   // start near the front wall
+    float farYaw = 3.14159f;                  // face the pots (-Z is "into" room)
+    float walkPh = 0.0f;
+    float camOrbit = 0.0f;   // C buttons swing the chase cam
+#ifdef FORCE_MENUCAM
+    int walkMode = 0;
+#else
+    int walkMode = 1;
+#endif    // 1 = third-person walk; 0 = classic menu-cam (C toggles)
     float t = 0.0f;
     int frameIdx = 0;
 
@@ -168,6 +191,9 @@ int main(void)
     rspq_block_begin();
         t3d_model_draw(mLamp);
     rspq_block_t *dplLamp = rspq_block_end();
+    rspq_block_begin();
+        t3d_model_draw(mFarmer);
+    rspq_block_t *dplFarmer = rspq_block_end();
 
 #ifdef FX_AT_BOOT
     fx_burst((fm_vec3_t){{36.0f, 12.0f, 12.0f}}, 20, 1, (uint8_t[4]){120, 200, 255, 0xFF});
@@ -231,6 +257,11 @@ int main(void)
             jin.btn.start = ((f >= 200) && (f % 400) == 0);  // open/close shop visits
             jin.btn.b     = (f == 900) || (f == 1700);
             jin.stick_x = 0; jin.stick_y = 0;
+            // autopilot: park the farmer beside a cycling pot (sel follows by proximity)
+            {   int wp = (f / 480) % 6;
+                farPos.v[0] = pots[wp].pos.v[0] + 14.0f;
+                farPos.v[2] = pots[wp].pos.v[2] + 14.0f;
+            }
             static bool told = false;
             if (!told) { told = true; debugf("[at] synth active\n"); }
         }
@@ -271,17 +302,18 @@ int main(void)
 
         int night = dayT >= 40.0f;   // hoisted: HUD reads it even on title
         if (screen == 0) goto render;
-        // camera drifts a hair with the stick for feel
-        camPos.v[0] += jin.stick_x * -0.04f;
-        if (camPos.v[0] > 30) camPos.v[0] = 30;
-        if (camPos.v[0] < -30) camPos.v[0] = -30;
-
-        // d-pad left/right (or stick edges) cycle the selected pot
-        uint32_t dir = 0;
-        if (jin.btn.d_right || jin.stick_x >  40) dir = 1;
-        if (jin.btn.d_left  || jin.stick_x < -40) dir = 2;
-        if (dir && !(prevDir & dir)) sel = (sel + (dir == 1 ? 1 : 5)) % 6;
-        prevDir = dir;
+        if (!walkMode) {
+            // menu-cam: stick drift + d-pad pot cycling (classic controls)
+            camPos.v[0] += jin.stick_x * -0.04f;
+            if (camPos.v[0] > 30) camPos.v[0] = 30;
+            if (camPos.v[0] < -30) camPos.v[0] = -30;
+            uint32_t dir = 0;
+            if (jin.btn.d_right || jin.stick_x >  40) dir = 1;
+            if (jin.btn.d_left  || jin.stick_x < -40) dir = 2;
+            if (dir && !(prevDir & dir)) sel = (sel + (dir == 1 ? 1 : 5)) % 6;
+            prevDir = dir;
+            canAct = 1;
+        }
 
         // (night computed above)
 
@@ -297,8 +329,8 @@ int main(void)
             if (pots[i].water < 0.0f) pots[i].water = 0.0f;
             pots[i].rot = sinf(t * 0.8f + i) * 0.05f;  // fan breeze sway
         }
-        // A: water if thirsty/growing, harvest if ripe
-        if (jin.btn.a) {
+        // A: water if thirsty/growing, harvest if ripe (walk mode: near the pot)
+        if (jin.btn.a && canAct) {
             if (pots[sel].growth >= 1.0f) {
                 int val = (int)((10 + pots[sel].quality * 40.0f) * (1.0f + 0.25f * lvBags));
                 money += val;
@@ -354,8 +386,83 @@ int main(void)
 #ifdef AUDIO_ON
         if (sfxCool > 0) sfxCool--;
 #endif
+        // C toggles camera mode: third-person walk vs classic menu-cam
+        static bool prevC = false;
+        if (jin.btn.c_right && !prevC) { walkMode = !walkMode; debugf("[cam] mode %d\n", walkMode); }
+        prevC = jin.btn.c_right;
+        if (jin.btn.c_up)    camOrbit += 0.045f;   // hold C-up/C-down: orbit cam
+        if (jin.btn.c_down)  camOrbit -= 0.045f;
+
+        // ---- third-person farmer movement (tank controls) ----
+        // facingDir(yaw) = (sin yaw, cos yaw); yaw=0 faces +Z.
+        // stick maps to world dirs: up = -Z (toward the pots), right = +X.
+        if (walkMode && screen == 1) {
+            float mx = jin.stick_x * 0.0022f;
+            float mz = -jin.stick_y * 0.0022f;
+            if (jin.btn.d_left)  mx = -0.5f;
+            if (jin.btn.d_right) mx =  0.5f;
+            if (jin.btn.d_up)    mz = -0.5f;
+            if (jin.btn.d_down)  mz =  0.5f;
+            float mag = sqrtf(mx*mx + mz*mz);
+            if (mag > 0.06f) {
+                if (mag > 1.0f) { mx /= mag; mz /= mag; mag = 1.0f; }
+                float spd = 0.45f * mag;
+                farPos.v[0] += mx * spd;
+                farPos.v[2] += mz * spd;
+                if (farPos.v[0] >  70) farPos.v[0] =  70;
+                if (farPos.v[0] < -70) farPos.v[0] = -70;
+                if (farPos.v[2] >  66) farPos.v[2] =  66;
+                if (farPos.v[2] < -44) farPos.v[2] = -44;
+                farYaw = atan2f(mx, mz);        // face travel dir
+                walkPh += mag * 0.35f;
+            } else {
+                walkPh *= 0.9f;
+            }
+            // selection = nearest pot to the farmer
+            int bi = 0; float bd = 1e9f;
+            for (int i = 0; i < 6; i++) {
+                float dx = pots[i].pos.v[0] - farPos.v[0];
+                float dz = pots[i].pos.v[2] - farPos.v[2];
+                float d = dx*dx + dz*dz;
+                if (d < bd) { bd = d; bi = i; }
+            }
+            sel = bi;
+            canAct = (bd < 26.0f * 26.0f);
+            // over-shoulder chase: close, raised, slightly offset right.
+            // long distances fling the cam across the tiny room and other
+            // pots occlude the farmer — keep it short and high.
+            float camYaw = farYaw + camOrbit;
+            // tight over-shoulder: cam just behind the shoulder, gaze at hip depth.
+            // in a 90-unit room a distant cam only ever shows walls.
+            // the room only has a BACK wall (+z); the front is open.
+            // so the chase cam rides the open side: farmer always framed
+            // against the room interior, never clipped by geometry.
+            float orb = camOrbit * 0.5f;   // C-right swings the viewing angle a bit
+            // humanoid-readable framing (vision-verified): 26 right / 58 out
+            // the open front, target chest-high; bigger avatar fills the frame.
+            float ox = 26.0f;
+            float oz = 58.0f;
+            camPos.v[0] += ((farPos.v[0] + ox) - camPos.v[0]) * 0.10f;
+            camPos.v[1] += ((farPos.v[1] + 36.0f) - camPos.v[1]) * 0.10f;
+            camPos.v[2] += ((farPos.v[2] + oz) - camPos.v[2]) * 0.10f;
+            camTarget.v[0] += (farPos.v[0] - camTarget.v[0]) * 0.30f;
+            camTarget.v[1] += ((farPos.v[1] + 14.0f) - camTarget.v[1]) * 0.30f;
+            camTarget.v[2] += (farPos.v[2] - camTarget.v[2]) * 0.30f;
+            static int mdbg = 0;
+            if ((mdbg++ % 120) == 0)
+                debugf("[far] pos %d %d yaw %d sel %d act %d cam %d %d %d tgt %d %d %d\n",
+                       (int)farPos.v[0], (int)farPos.v[2], (int)(farYaw * 57.3f), sel, canAct,
+                       (int)camPos.v[0], (int)camPos.v[1], (int)camPos.v[2],
+                       (int)camTarget.v[0], (int)camTarget.v[1], (int)camTarget.v[2]);
+        }
+
         render:
         t3d_viewport_set_projection(&viewport, T3D_DEG_TO_RAD(65.0f), 5.0f, 300.0f);
+#ifdef SHOWONLYFARMER
+        farYaw = 0.0f; farPos = (fm_vec3_t){{0, -2.0f, 10.0f}}; walkPh = 0;
+        camPos = (fm_vec3_t){{26, 34, 58}};
+        camTarget = (fm_vec3_t){{0, 12, 0}};
+#endif
         if (screen == 0) {
             camA += 0.004f;
             fm_vec3_t orbit = (fm_vec3_t){{ sinf(camA) * 115.0f, 34.0f, cosf(camA) * 115.0f + 6.0f }};
@@ -376,13 +483,13 @@ int main(void)
             }
             if (pots[i].growth >= 1.0f) rot *= 4.0f;
             // plant / sprout
-            t3d_mat4fp_from_srt_euler(&matFP[mi + 17 * frameIdx],
+            t3d_mat4fp_from_srt_euler(&matFP[mi + 18 * frameIdx],
                 (float[3]){s, s, s},
                 (float[3]){rot, rot * 1.3f + t * 0.1f, rot},
                 (float[3]){pots[i].pos.v[0], pots[i].pos.v[1] + 6.5f, pots[i].pos.v[2]});
             mi++;
             // pot
-            t3d_mat4fp_from_srt_euler(&matFP[mi + 17 * frameIdx],
+            t3d_mat4fp_from_srt_euler(&matFP[mi + 18 * frameIdx],
                 (float[3]){0.16f, 0.16f, 0.16f},
                 (float[3]){0, 0, 0},
                 (float[3]){pots[i].pos.v[0], pots[i].pos.v[1], pots[i].pos.v[2]});
@@ -392,7 +499,11 @@ int main(void)
         rdpq_attach(display_get(), display_get_zbuf());
         t3d_frame_start();
         t3d_viewport_attach(&viewport);
+#ifdef SHOWONLYFARMER
+        t3d_screen_clear_color(RGBA32(128, 128, 128, 0xFF));
+#else
         t3d_screen_clear_color(RGBA32(18, 8, 30, 0xFF));
+#endif
         t3d_screen_clear_depth();
 
         if (night) {
@@ -401,10 +512,18 @@ int main(void)
                                 &(fm_vec3_t){{0, 50, 40}}, 60.0f, false);
             t3d_light_set_count(1);
         } else {
-            t3d_light_set_ambient((uint8_t[4]){22, 10, 34, 0xFF});
+            t3d_light_set_ambient((uint8_t[4]){110, 70, 150, 0xFF});  // walk mode readability
             for (int i = 0; i < 2; i++)
                 t3d_light_set_point(i, &lights[i].color.r, &lights[i].pos, lights[i].strength, false);
             t3d_light_set_count(2);
+        }
+        // walk mode: lantern riding with the farmer so he (and the view)
+        // aren't swallowed by darkness outside the grow-light pool
+        if (walkMode && screen == 1) {
+            fm_vec3_t lantern = {{farPos.v[0] + sinf(farYaw) * 8.0f,
+                                 farPos.v[1] + 34.0f, farPos.v[2] + cosf(farYaw) * 8.0f}};
+            t3d_light_set_point(2, (uint8_t[4]){255, 252, 240, 0xFF}, &lantern, 380.0f, false);  // near-white so avatar colors read
+            t3d_light_set_count(3);
         }
 
         // pots + plants (6 each, mats packed 0..11).
@@ -413,11 +532,12 @@ int main(void)
         // models fly off to infinity (black frame).
         t3d_matrix_push_pos(1);
         mi = 0;
+#ifndef SHOWONLYFARMER
         for (int i = 0; i < 6; i++) {
-            t3d_matrix_set(&matFP[mi + 17 * frameIdx], true);
+            t3d_matrix_set(&matFP[mi + 18 * frameIdx], true);
             rspq_block_run(dplPot);
             mi++;
-            t3d_matrix_set(&matFP[mi + 17 * frameIdx], true);
+            t3d_matrix_set(&matFP[mi + 18 * frameIdx], true);
             if (pots[i].growth < 0.35f)
                 t3d_model_draw(mSprout);   // stage 0: seedling
             else
@@ -426,7 +546,7 @@ int main(void)
         }
         // floor: crate box flattened to a slab
         {
-            T3DMat4FP *mfp = &matFP[14 + 17 * frameIdx];
+            T3DMat4FP *mfp = &matFP[14 + 18 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){1.6f, 0.015f, 0.9f},
                 (float[3]){0, 0, 0},
@@ -436,7 +556,7 @@ int main(void)
         }
         // back wall
         {
-            T3DMat4FP *mfp = &matFP[15 + 17 * frameIdx];
+            T3DMat4FP *mfp = &matFP[15 + 18 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){1.6f, 0.9f, 0.015f},
                 (float[3]){0, 0, 0},
@@ -446,7 +566,7 @@ int main(void)
         }
         // lamp bars over the rows
         for (int i = 0; i < 2; i++) {
-            T3DMat4FP *mfp = &matFP[12 + i + 17 * frameIdx];
+            T3DMat4FP *mfp = &matFP[12 + i + 18 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){0.5f, 0.12f, 0.12f},
                 (float[3]){0, 0, 0},
@@ -457,7 +577,7 @@ int main(void)
         // selection cursor: bobbing lamp-bar chip over the selected pot
         {
             float bob = sinf(t * 4.0f) * 2.0f;
-            T3DMat4FP *mfp = &matFP[16 + 17 * frameIdx];
+            T3DMat4FP *mfp = &matFP[16 + 18 * frameIdx];
             t3d_mat4fp_from_srt_euler(mfp,
                 (float[3]){0.22f, 0.22f, 0.22f},
                 (float[3]){sinf(t * 3.0f) * 0.4f, t * 2.0f, 0},
@@ -466,6 +586,32 @@ int main(void)
             t3d_matrix_set(mfp, true);
             rspq_block_run(dplLamp);
         }
+#endif
+        // farmer (third-person avatar, slot 17)
+        {
+            float bob = sinf(walkPh) * 1.4f;                 // step bounce
+            float lean = sinf(walkPh) * 0.06f;               // weight shift
+            T3DMat4FP *mfp = &matFP[17 + 18 * frameIdx];
+            t3d_mat4fp_from_srt_euler(mfp,
+                (float[3]){0.009f, 0.009f, 0.009f},           // 6048u raw -> 54u tall chunky hero
+                (float[3]){lean, farYaw, lean * 0.6f},
+                (float[3]){farPos.v[0], farPos.v[1] + bob, farPos.v[2]});
+            t3d_matrix_set(mfp, true);
+            {   // engine-space screen projection of his feet + hat top
+                T3DVec3 s;
+                t3d_viewport_calc_viewspace_pos(&viewport, &s, (T3DVec3*)&farPos);
+                T3DVec3 h = {{farPos.v[0], farPos.v[1] + 38.0f, farPos.v[2]}};
+                t3d_viewport_calc_viewspace_pos(&viewport, &h, &h);
+                static int sdbg = 0;
+                if ((sdbg++ % 120) == 0)
+                    debugf("[scr] feet %d %d hat %d %d\n",
+                        (int)s.v[0], (int)s.v[1], (int)h.v[0], (int)h.v[1]);
+            }
+#ifndef FAROFF
+            rspq_block_run(dplFarmer);
+#endif
+        }
+
         t3d_matrix_pop(1);
 
         // ---- particles (tinyPX) ----
